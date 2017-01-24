@@ -1,4 +1,4 @@
-# fszm
+# rustzork
 ZMachine V3 in Rust
 
 Not finished yet.
