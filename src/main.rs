@@ -551,6 +551,7 @@ struct Machine {
     memory: Memory,
     header: Header,
     ip: usize,
+    finished: bool,
 }
 
 impl Machine {
@@ -559,6 +560,7 @@ impl Machine {
             ip: memory.read_u16(0x6) as usize,
             memory: memory,
             header: header,
+            finished: false,
         }
     }
 
@@ -566,11 +568,15 @@ impl Machine {
         Instruction::new(&self.memory, self.ip)
     }
 
-    fn execute(&mut self, i: Instruction) {
+    fn execute(&mut self, i: Instruction) -> Result<(), String> {
         let oldip = self.ip;
+        match i.name() {
+            _ => return Err(format!("unimplemented instruction:\n{}", i)),
+        }
         if self.ip == oldip {
             self.ip += i.length;
         }
+        Ok(())
     }
 }
 
@@ -601,9 +607,12 @@ fn main() {
         }
     };
 
-    for _ in 0..20 {
+    while !machine.finished {
         let i = machine.decode();
         println!("{}", i);
-        machine.execute(i);
+        if let Err(e) = machine.execute(i) {
+            println!("{}", e);
+            break;
+        }
     }
 }
