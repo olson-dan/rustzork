@@ -4,6 +4,7 @@ use std::cmp;
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
+use std::str;
 use clap::{App, Arg};
 
 struct Memory {
@@ -113,14 +114,105 @@ impl fmt::Display for Return {
 #[derive(Debug)]
 struct ZString {
     offset: usize,
+    length: usize,
     contents: String,
+}
+
+enum ZStringShift {
+    Zero,
+    One,
+    Two,
+}
+
+enum ZStringState {
+    GetNext(u8),
+    GetNextNext(u8, u8),
+    GetNothing,
 }
 
 impl ZString {
     fn new(memory: &Memory, offset: usize) -> ZString {
+        let mut length = 0usize;
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            let x = memory.read_u16(offset + length);
+            length += 2;
+
+            bytes.push(((x >> 10) & 0x1f) as u8);
+            bytes.push(((x >> 5) & 0x1f) as u8);
+            bytes.push((x & 0x1f) as u8);
+
+            if (x & 0x8000) != 0 {
+                break;
+            }
+        }
+
+        let mut shift = ZStringShift::Zero;
+        let mut state = ZStringState::GetNothing;
+        let contents = bytes.into_iter().fold(String::new(), |c, x| {
+            let enable_utf = if let ZStringShift::Two = shift {
+                true
+            } else {
+                false
+            };
+            match state {
+                ZStringState::GetNothing => {
+                    match x {
+                        0 => c + " ",
+                        1 | 2 | 3 => {
+                            state = ZStringState::GetNext(x);
+                            c
+                        }
+                        4 => {
+                            shift = ZStringShift::One;
+                            c
+                        }
+                        5 => {
+                            shift = ZStringShift::Two;
+                            c
+                        }
+                        6 if enable_utf => {
+                            state = ZStringState::GetNext(x);
+                            c
+                        }
+                        a if a > 5 && a < 32 => {
+                            let alphabet = match shift {
+                                ZStringShift::Zero => "______abcdefghijklmnopqrstuvwxyz",
+                                ZStringShift::One => "______ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                                ZStringShift::Two => "______^\n0123456789.,!?_#\'\"/\\-:()",
+                            };
+                            shift = ZStringShift::Zero;
+                            c + &alphabet.chars().nth(a as usize).unwrap().to_string()
+                        }
+                        _ => c,
+                    }
+                }
+                ZStringState::GetNext(a) if a > 0 && a < 4 => {
+                    state = ZStringState::GetNothing;
+                    let table = memory.read_u16(0x18) as usize;
+                    let index = (32 * (a - 1) + x) as usize;
+                    let offset = memory.read_u16(table + index * 2) as usize;
+                    let abbrev = ZString::new(memory, offset * 2);
+                    c + &abbrev.contents
+                }
+                ZStringState::GetNext(6) => {
+                    state = ZStringState::GetNextNext(6, x);
+                    c
+                }
+                ZStringState::GetNextNext(6, b) => {
+                    state = ZStringState::GetNothing;
+                    let utf_char = (b << 5) | x;
+                    let v = vec![utf_char];
+                    c + str::from_utf8(&v).unwrap()
+                }
+                _ => c,
+            }
+        });
+
         ZString {
             offset: offset,
-            contents: String::from(""),
+            length: length,
+            contents: contents,
         }
     }
 }
@@ -408,7 +500,16 @@ impl Instruction {
         }
     }
 
-    fn add_print(&mut self, memory: &Memory) {}
+    fn add_print(&mut self, memory: &Memory) {
+        if match self.optype {
+            Encoding::Op0 => self.opcode == 2 || self.opcode == 3,
+            _ => false,
+        } {
+            let s = ZString::new(memory, self.offset + self.length);
+            self.length += s.length;
+            self.string = Some(s);
+        }
+    }
 
     fn new(memory: &Memory, offset: usize) -> Instruction {
         let op = memory.read_u8(offset);
@@ -427,12 +528,22 @@ impl Instruction {
 impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let args: Vec<String> = self.args.iter().map(|a| format!("{}", a)).collect();
-        write!(f,
-               "[{:08X}] {}\t{}{}",
-               self.offset,
-               self.name().to_uppercase(),
-               args.join(","),
-               self.ret)
+        if let Some(ref x) = self.string {
+            write!(f,
+                   "[{:08X}] {}\t{}{}\"{}\"",
+                   self.offset,
+                   self.name().to_uppercase(),
+                   args.join(","),
+                   self.ret,
+                   x)
+        } else {
+            write!(f,
+                   "[{:08X}] {}\t{}{}",
+                   self.offset,
+                   self.name().to_uppercase(),
+                   args.join(","),
+                   self.ret)
+        }
     }
 }
 
