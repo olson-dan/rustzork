@@ -45,15 +45,6 @@ impl fmt::Display for Return {
     }
 }
 
-impl From<Return> for Operand {
-    fn from(other: Return) -> Operand {
-        match other {
-            Return::Variable(x) => Operand::Variable(x),
-            _ => Operand::Omitted,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct Frame {
     addr: usize,
@@ -517,22 +508,30 @@ impl Instruction {
 impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let args: Vec<String> = self.args.iter().map(|a| format!("{}", a)).collect();
-        if let Some(ref x) = self.string {
-            write!(f,
-                   "[{:08X}] {}\t{}{}\"{}\"",
-                   self.offset,
-                   self.name().to_uppercase(),
-                   args.join(","),
-                   self.ret,
-                   x)
+        let string = if let Some(ref x) = self.string {
+            format!(" \"{}\"", x)
         } else {
-            write!(f,
-                   "[{:08X}] {}\t{}{}",
-                   self.offset,
-                   self.name().to_uppercase(),
-                   args.join(","),
-                   self.ret)
-        }
+            String::new()
+        };
+        let compare = if let Some(x) = self.compare {
+            format!(" [{}]", x.to_string().to_uppercase())
+        } else {
+            String::new()
+        };
+        let offset = if let Some(x) = self.jump_offset {
+            format!(" {:08X}", (self.offset + self.length) as i32 + x - 2)
+        } else {
+            String::new()
+        };
+        write!(f,
+               "[{:08X}] {}\t{}{}{}{}{}",
+               self.offset,
+               self.name().to_uppercase(),
+               args.join(","),
+               self.ret,
+               string,
+               compare,
+               offset)
     }
 }
 
@@ -594,13 +593,13 @@ impl Machine {
     }
 
     fn write_global(&mut self, var: u8, val: u16) {
-        let index = self.header.globals + (var as usize);
-        let offset = self.header.dynamic_start + (index * 2);
+        let index = var as usize * 2;
+        let offset = self.header.globals + self.header.dynamic_start + index;
         self.memory.write_u16(offset, val);
     }
 
-    fn write_var(&mut self, var: Operand, val: u16) {
-        if let Operand::Variable(x) = var {
+    fn write_var(&mut self, var: Return, val: u16) {
+        if let Return::Variable(x) = var {
             match x {
                 x if x >= 0x10 => self.write_global(x - 0x10, val),
                 x if x == 0 => self.memory.stack.push(val),
@@ -619,8 +618,8 @@ impl Machine {
     }
 
     fn read_global(&self, var: u8) -> u16 {
-        let index = self.header.globals + (var as usize);
-        let offset = self.header.dynamic_start + (index * 2);
+        let index = var as usize * 2;
+        let offset = self.header.globals + self.header.dynamic_start + index;
         self.memory.read_u16(offset)
     }
 
@@ -639,20 +638,25 @@ impl Machine {
         }
     }
 
-    fn call(&mut self, addr: usize, retaddr: usize, retdata: Return, args: &[u16]) {
+    fn call(&mut self, i: Instruction) {
+        let mut args_iter = i.args.into_iter();
+        let arg0 = args_iter.next().unwrap();
+        let addr = self.header.dynamic_start + (self.read_var(arg0) as usize) * 2;
+        let ret_addr = self.ip + i.length;
+        let args: Vec<_> = args_iter.map(|a| self.read_var(a)).collect();
         if addr - self.header.dynamic_start == 0 {
-            self.write_var(Operand::from(retdata), 0);
-            self.ip = retaddr;
+            self.write_var(i.ret, 0);
+            self.ip = ret_addr;
         } else {
             let num_locals = self.memory.read_u8(addr) as usize;
             self.memory.frames.push(Frame {
                 addr: addr,
                 stack_start: self.memory.stack.len(),
                 num_locals: num_locals,
-                return_storage: retdata,
-                return_addr: retaddr,
+                return_storage: i.ret,
+                return_addr: ret_addr,
             });
-            for i in 0..num_locals - 1 {
+            for i in 0..num_locals {
                 let arg = if i < args.len() {
                     args[i]
                 } else {
@@ -664,30 +668,56 @@ impl Machine {
         }
     }
 
+    fn jump(&mut self, i: Instruction, compare: bool) {
+        if let Some(x) = i.compare {
+            if compare == x {
+                self.ip = match i.jump_offset {
+                    Some(0) => 0,
+                    Some(1) => 0,
+                    Some(x) => {
+                        let offset = (i.offset + i.length) as i32 + x - 2;
+                        offset as usize
+                    }
+                    None => self.ip,
+                };
+            }
+        }
+    }
+
     fn decode(&self) -> Instruction {
         Instruction::new(&self.memory, self.ip)
     }
 
     fn execute(&mut self, i: Instruction) -> Result<(), String> {
         let oldip = self.ip;
+        let length = i.length;
         match i.name() {
             "call" => {
-                let mut args_iter = i.args.into_iter();
-                let arg0 = args_iter.next().unwrap();
-                let addr = self.header.dynamic_start + (self.read_var(arg0) as usize) * 2;
-                let ret_addr = self.ip + i.length;
-                let args: Vec<_> = args_iter.map(|a| self.read_var(a)).collect();
-                self.call(addr, ret_addr, i.ret, &args);
+                self.call(i);
             }
             "add" => {
                 let x = self.read_var(i.args[0]) as i16;
                 let y = self.read_var(i.args[1]) as i16;
-                self.write_var(Operand::from(i.ret), (x + y) as u16);
+                self.write_var(i.ret, (x + y) as u16);
+            }
+            "je" => {
+                let x = self.read_var(i.args[0]);
+                let compare = i.args[1..].iter().any(|&b| x == self.read_var(b));
+                self.jump(i, compare);
+            }
+            "sub" => {
+                let x = self.read_var(i.args[0]) as i16;
+                let y = self.read_var(i.args[1]) as i16;
+                self.write_var(i.ret, (x - y) as u16);
+            }
+            "jz" => {
+                let x = self.read_var(i.args[0]);
+                self.jump(i, x == 0);
             }
             _ => return Err(format!("unimplemented instruction:\n{}", i)),
         }
         if self.ip == oldip {
-            self.ip += i.length;
+            self.ip += length;
         }
         Ok(())
     }
@@ -708,10 +738,10 @@ fn main() {
     let matches = App::new("rustzork")
         .version("1.0")
         .about("Interpreter for V3 zmachine spec.")
-        .arg(Arg::with_name("file").help("Path to the .z3 file to run").index(1).required(true))
+        .arg(Arg::with_name("file").help("Path to the .z3 file to run").index(1).required(false))
         .get_matches();
 
-    let filename = matches.value_of("file").unwrap();
+    let filename = matches.value_of("file").unwrap_or("zork.z3");
     let mut machine = match open_z3(filename) {
         Ok(x) => x,
         Err(e) => {
