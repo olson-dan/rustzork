@@ -679,6 +679,11 @@ impl Machine {
                 let args: Vec<_> = args_iter.map(|a| self.read_var(a)).collect();
                 self.call(addr, ret_addr, i.ret, &args);
             }
+            "add" => {
+                let x = self.read_var(i.args[0]) as i16;
+                let y = self.read_var(i.args[1]) as i16;
+                self.write_var(Operand::from(i.ret), (x + y) as u16);
+            }
             _ => return Err(format!("unimplemented instruction:\n{}", i)),
         }
         if self.ip == oldip {
