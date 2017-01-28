@@ -7,72 +7,6 @@ use std::io::Read;
 use std::str;
 use clap::{App, Arg};
 
-struct Memory {
-    memory: Vec<u8>,
-    stack: Vec<u16>,
-}
-
-impl Memory {
-    fn new(buffer: Vec<u8>) -> Memory {
-        let stack: Vec<u16> = Vec::new();
-        Memory {
-            memory: buffer,
-            stack: stack,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.memory.len()
-    }
-
-    fn read_u8(&self, offset: usize) -> u8 {
-        self.memory[offset]
-    }
-
-    fn read_u16(&self, offset: usize) -> u16 {
-        ((self.memory[offset] as u16) << 8) | (self.memory[offset + 1] as u16)
-    }
-
-    fn write_u8(&mut self, offset: usize, val: u8) {
-        self.memory[offset] = val
-    }
-
-    fn write_u16(&mut self, offset: usize, val: u16) {
-        self.memory[offset] = (val >> 8) as u8;
-        self.memory[offset + 1] = (val & 0xff) as u8;
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-struct Header {
-    dynamic_start: usize,
-    dynamic_end: usize,
-    static_start: usize,
-    static_end: usize,
-    high_start: usize,
-    high_end: usize,
-}
-
-impl Header {
-    fn new(mem: &Memory) -> Header {
-        let dynamic_start = 0;
-        let dynamic_end = mem.read_u16(0xe) as usize;
-        let static_start = dynamic_end;
-        let static_end = static_start + cmp::min(0xffff, mem.len());
-        let high_start = mem.read_u16(0x4) as usize;
-        let high_end = mem.len();
-
-        Header {
-            dynamic_start: dynamic_start,
-            dynamic_end: dynamic_end,
-            static_start: static_start,
-            static_end: static_end,
-            high_start: high_start,
-            high_end: high_end,
-        }
-    }
-}
-
 #[derive(Debug, Copy, Clone)]
 enum Operand {
     Large(u16),
@@ -108,6 +42,61 @@ impl fmt::Display for Return {
             &Return::Variable(x) => write!(f, " -> L{:02x}", x - 1),
             _ => write!(f, ""),
         }
+    }
+}
+
+impl From<Return> for Operand {
+    fn from(other: Return) -> Operand {
+        match other {
+            Return::Variable(x) => Operand::Variable(x),
+            _ => Operand::Omitted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    addr: usize,
+    stack_start: usize,
+    num_locals: usize,
+    return_storage: Return,
+    return_addr: usize,
+}
+
+struct Memory {
+    memory: Vec<u8>,
+    stack: Vec<u16>,
+    frames: Vec<Frame>,
+}
+
+impl Memory {
+    fn new(buffer: Vec<u8>) -> Memory {
+        Memory {
+            memory: buffer,
+            stack: Vec::new(),
+            frames: Vec::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.memory.len()
+    }
+
+    fn read_u8(&self, offset: usize) -> u8 {
+        self.memory[offset]
+    }
+
+    fn read_u16(&self, offset: usize) -> u16 {
+        ((self.memory[offset] as u16) << 8) | (self.memory[offset + 1] as u16)
+    }
+
+    fn write_u8(&mut self, offset: usize, val: u8) {
+        self.memory[offset] = val
+    }
+
+    fn write_u16(&mut self, offset: usize, val: u16) {
+        self.memory[offset] = (val >> 8) as u8;
+        self.memory[offset + 1] = (val & 0xff) as u8;
     }
 }
 
@@ -547,6 +536,39 @@ impl fmt::Display for Instruction {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+struct Header {
+    dynamic_start: usize,
+    dynamic_end: usize,
+    static_start: usize,
+    static_end: usize,
+    high_start: usize,
+    high_end: usize,
+    globals: usize,
+}
+
+impl Header {
+    fn new(mem: &Memory) -> Header {
+        let dynamic_start = 0;
+        let dynamic_end = mem.read_u16(0xe) as usize;
+        let static_start = dynamic_end;
+        let static_end = static_start + cmp::min(0xffff, mem.len());
+        let high_start = mem.read_u16(0x4) as usize;
+        let high_end = mem.len();
+        let globals = mem.read_u16(0xc) as usize;
+
+        Header {
+            dynamic_start: dynamic_start,
+            dynamic_end: dynamic_end,
+            static_start: static_start,
+            static_end: static_end,
+            high_start: high_start,
+            high_end: high_end,
+            globals: globals,
+        }
+    }
+}
+
 struct Machine {
     memory: Memory,
     header: Header,
@@ -564,6 +586,84 @@ impl Machine {
         }
     }
 
+    fn write_local(&mut self, var: u8, val: u16) {
+        if let Some(frame) = self.memory.frames.last() {
+            let index = frame.stack_start + (var as usize);
+            self.memory.stack[index] = val;
+        }
+    }
+
+    fn write_global(&mut self, var: u8, val: u16) {
+        let index = self.header.globals + (var as usize);
+        let offset = self.header.dynamic_start + (index * 2);
+        self.memory.write_u16(offset, val);
+    }
+
+    fn write_var(&mut self, var: Operand, val: u16) {
+        if let Operand::Variable(x) = var {
+            match x {
+                x if x >= 0x10 => self.write_global(x - 0x10, val),
+                x if x == 0 => self.memory.stack.push(val),
+                _ => self.write_local(x - 1, val),
+            }
+        }
+    }
+
+    fn read_local(&self, var: u8) -> u16 {
+        if let Some(frame) = self.memory.frames.last() {
+            let index = frame.stack_start + (var as usize);
+            self.memory.stack[index]
+        } else {
+            0u16
+        }
+    }
+
+    fn read_global(&self, var: u8) -> u16 {
+        let index = self.header.globals + (var as usize);
+        let offset = self.header.dynamic_start + (index * 2);
+        self.memory.read_u16(offset)
+    }
+
+    fn read_var(&mut self, var: Operand) -> u16 {
+        match var {
+            Operand::Variable(x) => {
+                match x {
+                    x if x >= 0x10 => self.read_global(x - 0x10),
+                    x if x == 0 => self.memory.stack.pop().unwrap(),
+                    _ => self.read_local(x - 1),
+                }
+            }
+            Operand::Large(x) => x,
+            Operand::Small(x) => x as u16,
+            Operand::Omitted => 0,
+        }
+    }
+
+    fn call(&mut self, addr: usize, retaddr: usize, retdata: Return, args: &[u16]) {
+        if addr - self.header.dynamic_start == 0 {
+            self.write_var(Operand::from(retdata), 0);
+            self.ip = retaddr;
+        } else {
+            let num_locals = self.memory.read_u8(addr) as usize;
+            self.memory.frames.push(Frame {
+                addr: addr,
+                stack_start: self.memory.stack.len(),
+                num_locals: num_locals,
+                return_storage: retdata,
+                return_addr: retaddr,
+            });
+            for i in 0..num_locals - 1 {
+                let arg = if i < args.len() {
+                    args[i]
+                } else {
+                    self.memory.read_u16(addr + 1 + i * 2)
+                };
+                self.memory.stack.push(arg);
+            }
+            self.ip = addr + 1 + num_locals * 2;
+        }
+    }
+
     fn decode(&self) -> Instruction {
         Instruction::new(&self.memory, self.ip)
     }
@@ -571,6 +671,14 @@ impl Machine {
     fn execute(&mut self, i: Instruction) -> Result<(), String> {
         let oldip = self.ip;
         match i.name() {
+            "call" => {
+                let mut args_iter = i.args.into_iter();
+                let arg0 = args_iter.next().unwrap();
+                let addr = self.header.dynamic_start + (self.read_var(arg0) as usize) * 2;
+                let ret_addr = self.ip + i.length;
+                let args: Vec<_> = args_iter.map(|a| self.read_var(a)).collect();
+                self.call(addr, ret_addr, i.ret, &args);
+            }
             _ => return Err(format!("unimplemented instruction:\n{}", i)),
         }
         if self.ip == oldip {
