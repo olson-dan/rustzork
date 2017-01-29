@@ -456,7 +456,7 @@ impl Instruction {
         if match self.optype {
             Encoding::Op2 => (self.opcode >= 1 && self.opcode <= 7) || (self.opcode == 10),
             Encoding::Op1 => self.opcode <= 2,
-            Encoding::Var => {
+            Encoding::Op0 => {
                 self.opcode == 5 || self.opcode == 6 || self.opcode == 0xd || self.opcode == 0xf
             }
             _ => false,
@@ -532,6 +532,91 @@ impl fmt::Display for Instruction {
                string,
                compare,
                offset)
+    }
+}
+
+struct Property {
+    offset: usize,
+    index: usize,
+    length: usize,
+}
+
+impl Property {
+    fn new(memory: &Memory, offset: usize) -> Property {
+        let size = memory.read_u8(offset);
+        Property {
+            offset: offset,
+            index: (size & 31) as usize,
+            length: (((size & 0xe0) >> 5) + 1) as usize,
+        }
+    }
+
+    fn read(&self, memory: &Memory) -> u16 {
+        if self.length == 1 {
+            memory.read_u8(self.offset + 1) as u16
+        } else {
+            memory.read_u16(self.offset + 1)
+        }
+    }
+
+    fn write(&self, memory: &mut Memory, value: u16) {
+        if self.length == 1 {
+            memory.write_u8(self.offset + 1, (value & 0xff) as u8);
+        } else {
+            memory.write_u16(self.offset + 1, value);
+        }
+    }
+}
+
+struct Object {
+    offset: usize,
+    index: usize,
+    attrib: usize,
+    parent: usize,
+    sibling: usize,
+    child: usize,
+    name: ZString,
+}
+
+impl Object {
+    fn new(memory: &Memory, index: usize) -> Object {
+        let addr = memory.read_u16(0xa) as usize + 31 * 2 + (index - 1) * 9;
+        let prop_addr = memory.read_u16(addr + 7) as usize;
+        Object {
+            offset: prop_addr,
+            index: index,
+            attrib: ((memory.read_u16(addr + 0) as usize) << 16) |
+                    (memory.read_u16(addr + 2) as usize),
+            parent: memory.read_u8(addr + 4) as usize,
+            sibling: memory.read_u8(addr + 5) as usize,
+            child: memory.read_u8(addr + 6) as usize,
+            name: ZString::new(memory, prop_addr + 1),
+        }
+    }
+
+    fn get_property(&self, memory: &Memory, index: usize) -> Property {
+        let mut addr = self.offset + 1 + self.name.length;
+        loop {
+            let p = Property::new(memory, addr);
+            match p {
+                Property { index: 0, .. } => {
+                    let default_addr = memory.read_u16(0xa) as usize + index - 2;
+                    return Property::new(memory, default_addr);
+                }
+                Property { index: i, .. } if i == index => return p,
+                Property { length: l, .. } => addr = addr + l + 1,
+            }
+        }
+    }
+
+    fn write(&self, memory: &mut Memory) {
+        let addr = memory.read_u16(0xa) as usize + 31 * 2 + (self.index - 1) * 9;
+        memory.write_u16(addr, ((self.attrib >> 16) & 0xffff) as u16);
+        memory.write_u16(addr + 2, (self.attrib & 0xffff) as u16);
+        memory.write_u8(addr + 4, self.parent as u8);
+        memory.write_u8(addr + 5, self.sibling as u8);
+        memory.write_u8(addr + 6, self.child as u8);
+        memory.write_u16(addr + 7, self.offset as u16);
     }
 }
 
@@ -666,8 +751,7 @@ impl Machine {
         }
     }
 
-    fn ret(&mut self, i: Instruction) {
-        let val = self.read_var(i.args[0]);
+    fn ret(&mut self, i: Instruction, val: u16) {
         let frame = self.memory.frames.pop().unwrap();
         while self.memory.stack.len() != frame.stack_start {
             self.memory.stack.pop();
@@ -731,7 +815,8 @@ impl Machine {
                 self.memory.write_u16(offset, val);
             }
             "ret" => {
-                self.ret(i);
+                let val = self.read_var(i.args[0]);
+                self.ret(i, val);
             }
             "loadw" => {
                 let x = self.read_var(i.args[0]) as usize;
@@ -744,7 +829,78 @@ impl Machine {
                 let x = self.read_var(i.args[0]) as i16;
                 self.ip = (self.ip as i32 + i.length as i32 + x as i32 - 2) as usize;
             }
-            // 	(* put_prop*) (fun i _ -> i.args.[0] |> s.vin_addr |> s.readObj |> s.getProp (i.args.[1] |> s.vin_addr) |> s.writeProp (i.args.[2] |> s.vin));
+            "put_prop" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let y = self.header.dynamic_start + self.read_var(i.args[1]) as usize;
+                let val = self.read_var(i.args[2]);
+                let obj = Object::new(&self.memory, x);
+                let prop = obj.get_property(&self.memory, y);
+                prop.write(&mut self.memory, val);
+            }
+            "store" => {
+                let x = match i.args[0] {
+                    Operand::Large(x) => x as u8,
+                    Operand::Small(x) => x,
+                    _ => 0,
+                };
+                let y = self.read_var(i.args[1]);
+                self.write_var(Return::Variable(x), y);
+            }
+            "test_attr" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let y = 1 << (31 - self.read_var(i.args[1]) as usize);
+                let obj = Object::new(&self.memory, x);
+                self.jump(i, (obj.attrib & y) != 0);
+            }
+            "print" => {
+                if let Some(s) = i.string {
+                    print!("{}", s);
+                }
+            }
+            "new_line" => {
+                println!("");
+            }
+            "loadb" => {
+                let x = self.read_var(i.args[0]) as usize;
+                let y = self.read_var(i.args[1]) as usize;
+                let offset = self.header.dynamic_start + x + y;
+                let val = self.memory.read_u8(offset) as u16;
+                self.write_var(i.ret, val);
+            }
+            "and" => {
+                let x = self.read_var(i.args[0]);
+                let y = self.read_var(i.args[1]);
+                self.write_var(i.ret, x & y);
+            }
+            "print_num" => {
+                let x = self.read_var(i.args[0]);
+                print!("{}", x);
+            }
+            "inc_chk" => {
+                let x = match i.args[0] {
+                    Operand::Large(x) => x as u8,
+                    Operand::Small(x) => x,
+                    _ => 0,
+                };
+                let y = self.read_var(i.args[1]) as i16;
+                let old = self.read_var(Operand::Variable(x)) as i16;
+                self.write_var(Return::Variable(x), (old + 1) as u16);
+                self.jump(i, old + 1 > y);
+            }
+            "print_char" => {
+                let x = self.read_var(i.args[0]) as u8;
+                let v = vec![x];
+                print!("{}", str::from_utf8(&v).unwrap());
+            }
+            "rtrue" => {
+                self.ret(i, 1);
+            }
+            "insert_obj_notfinished" => {
+                let x = self.read_var(i.args[0]) as usize;
+                let y = self.read_var(i.args[1]) as usize;
+                let obj = Object::new(&self.memory, x);
+                let dest = Object::new(&self.memory, y);
+            }
             _ => return Err(format!("unimplemented instruction:\n{}", i)),
         }
         if self.ip == oldip {
