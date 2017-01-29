@@ -639,11 +639,9 @@ impl Machine {
     }
 
     fn call(&mut self, i: Instruction) {
-        let mut args_iter = i.args.into_iter();
-        let arg0 = args_iter.next().unwrap();
-        let addr = self.header.dynamic_start + (self.read_var(arg0) as usize) * 2;
+        let addr = self.header.dynamic_start + (self.read_var(i.args[0]) as usize) * 2;
         let ret_addr = self.ip + i.length;
-        let args: Vec<_> = args_iter.map(|a| self.read_var(a)).collect();
+        let args: Vec<_> = i.args[1..].iter().map(|&a| self.read_var(a)).collect();
         if addr - self.header.dynamic_start == 0 {
             self.write_var(i.ret, 0);
             self.ip = ret_addr;
@@ -666,6 +664,16 @@ impl Machine {
             }
             self.ip = addr + 1 + num_locals * 2;
         }
+    }
+
+    fn ret(&mut self, i: Instruction) {
+        let val = self.read_var(i.args[0]);
+        let frame = self.memory.frames.pop().unwrap();
+        while self.memory.stack.len() != frame.stack_start {
+            self.memory.stack.pop();
+        }
+        self.write_var(frame.return_storage, val);
+        self.ip = frame.return_addr;
     }
 
     fn jump(&mut self, i: Instruction, compare: bool) {
@@ -714,6 +722,29 @@ impl Machine {
                 let x = self.read_var(i.args[0]);
                 self.jump(i, x == 0);
             }
+            "storew" => {
+                let x = self.read_var(i.args[0]) as usize;
+                let y = self.read_var(i.args[1]) as usize;
+                let val = self.read_var(i.args[2]);
+                let addr = x + 2 * y;
+                let offset = self.header.dynamic_start + addr * 2;
+                self.memory.write_u16(offset, val);
+            }
+            "ret" => {
+                self.ret(i);
+            }
+            "loadw" => {
+                let x = self.read_var(i.args[0]) as usize;
+                let y = self.read_var(i.args[1]) as usize;
+                let offset = self.header.dynamic_start + x + 2 * y;
+                let val = self.memory.read_u16(offset);
+                self.write_var(i.ret, val);
+            }
+            "jump" => {
+                let x = self.read_var(i.args[0]) as i16;
+                self.ip = (self.ip as i32 + i.length as i32 + x as i32 - 2) as usize;
+            }
+            // 	(* put_prop*) (fun i _ -> i.args.[0] |> s.vin_addr |> s.readObj |> s.getProp (i.args.[1] |> s.vin_addr) |> s.writeProp (i.args.[2] |> s.vin));
             _ => return Err(format!("unimplemented instruction:\n{}", i)),
         }
         if self.ip == oldip {
