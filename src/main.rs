@@ -392,7 +392,7 @@ impl Instruction {
         let optypes = memory.read_u8(offset + 1);
         let mut size = 2;
         let mut args: Vec<Operand> = Vec::new();
-        for x in 0..3 {
+        for x in 0..4 {
             let shift = (3 - x) * 2;
             let mask = 3 << shift;
             args.push(match (optypes & mask) >> shift {
@@ -519,7 +519,11 @@ impl fmt::Display for Instruction {
             String::new()
         };
         let offset = if let Some(x) = self.jump_offset {
-            format!(" {:08X}", (self.offset + self.length) as i32 + x - 2)
+            match x {
+                0 => format!(" RFALSE"),
+                1 => format!(" RTRUE"),
+                _ => format!(" {:08X}", (self.offset + self.length) as i32 + x - 2),
+            }
         } else {
             String::new()
         };
@@ -617,6 +621,27 @@ impl Object {
         memory.write_u8(addr + 5, self.sibling as u8);
         memory.write_u8(addr + 6, self.child as u8);
         memory.write_u16(addr + 7, self.offset as u16);
+    }
+
+    fn remove(&mut self, memory: &mut Memory) {
+        if self.parent != 0 {
+            let mut parent = Object::new(memory, self.parent);
+            let mut child = Object::new(memory, parent.child);
+
+            if child.index == self.index {
+                parent.child = self.sibling;
+                parent.write(memory);
+            } else {
+                while child.sibling != self.index {
+                    child = Object::new(memory, child.sibling);
+                }
+                child.sibling = self.sibling;
+                child.write(memory);
+            }
+        }
+        self.parent = 0;
+        self.sibling = 0;
+        self.write(memory);
     }
 }
 
@@ -751,7 +776,7 @@ impl Machine {
         }
     }
 
-    fn ret(&mut self, i: Instruction, val: u16) {
+    fn ret(&mut self, val: u16) {
         let frame = self.memory.frames.pop().unwrap();
         while self.memory.stack.len() != frame.stack_start {
             self.memory.stack.pop();
@@ -764,8 +789,14 @@ impl Machine {
         if let Some(x) = i.compare {
             if compare == x {
                 self.ip = match i.jump_offset {
-                    Some(0) => 0,
-                    Some(1) => 0,
+                    Some(0) => {
+                        self.ret(0);
+                        self.ip
+                    }
+                    Some(1) => {
+                        self.ret(1);
+                        self.ip
+                    }
                     Some(x) => {
                         let offset = (i.offset + i.length) as i32 + x - 2;
                         offset as usize
@@ -816,7 +847,7 @@ impl Machine {
             }
             "ret" => {
                 let val = self.read_var(i.args[0]);
-                self.ret(i, val);
+                self.ret(val);
             }
             "loadw" => {
                 let x = self.read_var(i.args[0]) as usize;
@@ -893,13 +924,102 @@ impl Machine {
                 print!("{}", str::from_utf8(&v).unwrap());
             }
             "rtrue" => {
-                self.ret(i, 1);
+                self.ret(1);
             }
-            "insert_obj_notfinished" => {
+            "insert_obj" => {
                 let x = self.read_var(i.args[0]) as usize;
                 let y = self.read_var(i.args[1]) as usize;
+                let mut obj = Object::new(&self.memory, x);
+                let mut dest = Object::new(&self.memory, y);
+
+                obj.remove(&mut self.memory);
+
+                obj.sibling = dest.child;
+                dest.child = obj.index;
+                obj.parent = dest.index;
+
+                obj.write(&mut self.memory);
+                dest.write(&mut self.memory);
+            }
+            "push" => {
+                let x = self.read_var(i.args[0]);
+                self.write_var(Return::Variable(0), x);
+            }
+            "pull" => {
+                let x = match i.args[0] {
+                    Operand::Large(x) => x as u8,
+                    Operand::Small(x) => x,
+                    _ => 0,
+                };
+                let val = self.read_var(Operand::Variable(0));
+                self.write_var(Return::Variable(x), val);
+            }
+            "set_attr" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let y = 1 << (31 - self.read_var(i.args[1]) as usize);
+                let mut obj = Object::new(&self.memory, x);
+                obj.attrib = obj.attrib | y;
+                obj.write(&mut self.memory);
+            }
+            "jin" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let y = self.read_var(i.args[1]) as usize;
                 let obj = Object::new(&self.memory, x);
-                let dest = Object::new(&self.memory, y);
+                self.jump(i, obj.parent == y);
+            }
+            "print_obj" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let obj = Object::new(&self.memory, x);
+                print!("{}", obj.name);
+            }
+            "get_parent" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let obj = Object::new(&self.memory, x);
+                self.write_var(i.ret, obj.parent as u16);
+            }
+            "get_prop" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let y = self.read_var(i.args[1]) as usize;
+                let obj = Object::new(&self.memory, x);
+                let prop = obj.get_property(&self.memory, y);
+                let val = prop.read(&self.memory);
+                self.write_var(i.ret, val);
+            }
+            "jg" => {
+                let x = self.read_var(i.args[0]) as i16;
+                let y = self.read_var(i.args[1]) as i16;
+                self.jump(i, x > y);
+            }
+            "get_child" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let obj = Object::new(&self.memory, x);
+                self.write_var(i.ret, obj.child as u16);
+            }
+            "get_sibling" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let obj = Object::new(&self.memory, x);
+                self.write_var(i.ret, obj.sibling as u16);
+            }
+            "rfalse" => {
+                self.ret(0);
+            }
+            "inc" => {
+                let x = match i.args[0] {
+                    Operand::Large(x) => x as u8,
+                    Operand::Small(x) => x,
+                    _ => 0,
+                };
+                let old = self.read_var(Operand::Variable(x)) as i16;
+                self.write_var(Return::Variable(x), (old + 1) as u16);
+            }
+            "jl" => {
+                let x = self.read_var(i.args[0]) as i16;
+                let y = self.read_var(i.args[1]) as i16;
+                self.jump(i, x < y);
+            }
+            "ret_popped" => {
+                let x = self.read_var(Operand::Variable(0));
+                self.ret(x);
             }
             _ => return Err(format!("unimplemented instruction:\n{}", i)),
         }
