@@ -3,7 +3,9 @@ extern crate clap;
 use std::cmp;
 use std::fmt;
 use std::fs::File;
+use std::io;
 use std::io::Read;
+use std::io::Write;
 use std::str;
 use clap::{App, Arg};
 
@@ -91,7 +93,7 @@ impl Memory {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ZString {
     offset: usize,
     length: usize,
@@ -645,6 +647,55 @@ impl Object {
     }
 }
 
+#[derive(Debug)]
+struct Dictionary {
+    offset: usize,
+    separators: Vec<char>,
+    words: Vec<ZString>,
+}
+
+impl Dictionary {
+    fn new(memory: &Memory, offset: usize) -> Dictionary {
+        let mut separators: Vec<char> = Vec::new();
+        let mut words: Vec<ZString> = Vec::new();
+
+        let num_separators = memory.read_u8(offset) as usize;
+        for i in 0..num_separators {
+            separators.push(memory.read_u8(offset + i + 1) as char);
+        }
+
+        let entry_start = offset + num_separators + 1;
+        let entry_length = memory.read_u8(entry_start) as usize;
+        let num_entries = memory.read_u16(entry_start + 1) as usize;
+
+        for i in 0..num_entries {
+            words.push(ZString::new(memory, entry_start + 3 + i * entry_length));
+        }
+
+        Dictionary {
+            offset: offset,
+            separators: separators,
+            words: words,
+        }
+    }
+
+    fn get_word(&self, token: &str) -> Option<ZString> {
+        for word in self.words.iter() {
+            // 4 byte zstring stores max 6 characters
+            if word.contents.len() < 6 {
+                if word.contents == token {
+                    return Some(word.clone());
+                }
+            } else {
+                if token.starts_with(&word.contents) {
+                    return Some(word.clone());
+                }
+            }
+        }
+        None
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 struct Header {
     dynamic_start: usize,
@@ -681,6 +732,7 @@ impl Header {
 struct Machine {
     memory: Memory,
     header: Header,
+    dictionary: Dictionary,
     ip: usize,
     finished: bool,
 }
@@ -689,6 +741,7 @@ impl Machine {
     fn new(memory: Memory, header: Header) -> Machine {
         Machine {
             ip: memory.read_u16(0x6) as usize,
+            dictionary: Dictionary::new(&memory, memory.read_u16(0x08) as usize),
             memory: memory,
             header: header,
             finished: false,
@@ -886,6 +939,7 @@ impl Machine {
             "print" => {
                 if let Some(s) = i.string {
                     print!("{}", s);
+                    std::io::stdout().flush();
                 }
             }
             "new_line" => {
@@ -1021,6 +1075,30 @@ impl Machine {
                 let x = self.read_var(Operand::Variable(0));
                 self.ret(x);
             }
+            "sread" => {
+                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let y = self.header.dynamic_start + self.read_var(i.args[1]) as usize;
+                let max_length = self.memory.read_u8(x) as usize;
+                let max_parse = self.memory.read_u8(y) as usize;
+
+                let stdin = io::stdin();
+                let mut input = String::new();
+                if let Ok(_) = stdin.read_line(&mut input) {
+                    input = input.trim().to_lowercase();
+                    for (i, c) in input.chars().enumerate() {
+                        if i < max_length {
+                            self.memory.write_u8(x + 1 + i, c as u8);
+                        }
+                    }
+                }
+                self.memory.write_u8(x + input.len() + 1, 0);
+
+                let tokens: Vec<_> =
+                    input.split(|c| c == ' ' || self.dictionary.separators.iter().any(|x| *x == c))
+                        .collect();
+                self.memory.write_u8(y + 1, tokens.len() as u8);
+
+            }
             _ => return Err(format!("unimplemented instruction:\n{}", i)),
         }
         if self.ip == oldip {
@@ -1059,6 +1137,7 @@ fn main() {
 
     while !machine.finished {
         let i = machine.decode();
+        #[cfg(debug_assertions)]
         println!("{}", i);
         if let Err(e) = machine.execute(i) {
             println!("{}", e);
