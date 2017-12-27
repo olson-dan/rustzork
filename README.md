@@ -20,6 +20,6 @@ To do things:
 * Obtain a copy of `zork.z3` and put it into the root dir.
 * `> rustup update nightly`
 * `> rustup target add wasm32-unknown-unknown --toolchain=nightly`
-* `> cargo build --release --target wasm32-unknown-unkonwn --no-default-features`
+* `> cargo build --release --target wasm32-unknown-unknown --no-default-features`
 * `> python -m SimpleHTTPServer`
 * Browse to http://localhost:8000
