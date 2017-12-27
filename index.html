@@ -14,10 +14,12 @@
 </body>
 
 <script>
-var width = 80;
-var height = 25;
+var width = 100;
+var height = 43;
 var charWidth = 10;
 var charHeight = 20;
+
+var pressedKeys = [];
 
 var c = document.createElement('canvas');
 c.width = width * charWidth;
@@ -38,11 +40,14 @@ fetch('target/wasm32-unknown-unknown/release/rustzork.wasm')
         debug_trace: function(x) {
             console.log( "debug trace", x );
         },
+        terminal_height: function () {
+            return height;
+        },
         clear: function() {
             ctx.clearRect(0, 0, width*charWidth, height*charHeight);
         },
-        put_line: function(x,y,ptr,len,r,g,b) {
-            ctx.fillStyle = `rgb(${r},${g},${b})`;
+        put_line: function(x,y,ptr,len) {
+            ctx.fillStyle = `rgb(255,255,255)`;
             var text = "";
             var memory = new Uint8Array(wasm_instance.exports.memory.buffer, ptr, len);
             for( let n of memory.values() )
@@ -50,17 +55,25 @@ fetch('target/wasm32-unknown-unknown/release/rustzork.wasm')
                 text += String.fromCharCode( n );
             }
             ctx.fillText(text, x*charWidth + charWidth / 2, y*charHeight + charHeight);
-            //console.log(String.fromCharCode(char));
         }
     }
 })
 .then( results => {
     wasm_instance = results.instance;
-    machine_ptr = results.instance.exports.initialize();
+    machine_ptr = wasm_instance.exports.initialize();
     function update() {
         window.requestAnimationFrame(update);
-        results.instance.exports.update(machine_ptr);
+        for( let n of pressedKeys )
+        {
+            wasm_instance.exports.key_pressed(machine_ptr, n.keyCode);
+        }
+        pressedKeys = [];
+        wasm_instance.exports.update(machine_ptr);
     }
+    document.addEventListener('keydown', (event) => {
+        //console.log(event);
+        pressedKeys.push(event);
+    });
     update();
 }));
 </script>

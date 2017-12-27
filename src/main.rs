@@ -19,7 +19,15 @@ extern {
     fn clear();
     #[allow(dead_code)]
     fn debug_trace(x: i32);
-    fn put_line(x: i32, y: i32, text: *const u8, len: i32, r: i32, g: i32, b: i32);
+    fn terminal_height() -> i32;
+    fn put_line(x: i32, y: i32, text: *const u8, len: i32);
+}
+
+#[cfg(not(feature = "cli"))]
+enum InputState {
+    None,
+    Listening,
+    Consuming,
 }
 
 #[cfg(not(feature = "cli"))]
@@ -27,12 +35,13 @@ struct ZIO {
     buffer: String,
     input: String,
     flushed: bool,
+    state: InputState,
 }
 
 #[cfg(not(feature = "cli"))]
 impl ZIO {
     fn new() -> ZIO {
-        ZIO { buffer: String::new(), input: String::new(), flushed: true, }
+        ZIO { buffer: String::new(), input: String::new(), flushed: true, state: InputState::None, }
     }
     fn print(&mut self, s : &str) -> () {
         if s.ends_with("n") {
@@ -49,21 +58,46 @@ impl ZIO {
         self.buffer += "\n";
         self.flushed = false;
     }
-    fn poll_input(&mut self) -> bool {
-        false
+
+    fn key_down(&mut self, key: u8) {
+        if let InputState::Listening = self.state {
+            if key == 13 {
+                self.buffer.push('\n');
+                self.state = InputState::Consuming;
+            } else {
+                self.buffer.push(key as char);
+                self.input.push(key as char);
+            }
+            self.flushed = false;
+        }
     }
-    fn input(&self) -> String {
+
+    fn poll_input(&mut self) -> bool {
+        if let InputState::Consuming = self.state {
+            true
+        } else {
+            if let InputState::None = self.state {
+                self.buffer.push(' ');
+                self.state = InputState::Listening;
+                self.input = String::new();
+            }
+            false
+        }
+    }
+
+    fn input(&mut self) -> String {
+        self.state = InputState::None;
         self.input.clone()
     }
     fn draw(&mut self) -> () {
         if !self.flushed {
             self.flushed = true;
             unsafe { clear(); }
-            let max_lines = 25;
+            let max_lines = unsafe { terminal_height() } as usize;
             let lines : Vec<_> = self.buffer.lines().collect();
             let start = if lines.len() > max_lines { lines.len() - max_lines } else { 0 };
             for (y,l) in lines[start ..].iter().enumerate() {
-                unsafe { put_line(0, y as i32, l.as_ptr(), l.len() as i32, 255, 255, 255); }
+                unsafe { put_line(0, y as i32, l.as_ptr(), l.len() as i32); }
             }
         }
     }
@@ -826,6 +860,7 @@ pub struct Machine {
     dictionary: Dictionary,
     ip: usize,
     io: ZIO,
+    finished: bool,
 }
 
 impl Machine {
@@ -836,6 +871,7 @@ impl Machine {
             memory: memory,
             header: header,
             io: ZIO::new(),
+            finished: false,
         }
     }
 
@@ -1066,8 +1102,7 @@ impl Machine {
             }
             "print_char" => {
                 let x = self.read_var(i.args[0]) as u8;
-                let v = vec![x];
-                self.io.print(&format!("{}", str::from_utf8(&v).unwrap()));
+                self.io.print(&format!("{}", str::from_utf8(&[x]).unwrap()));
             }
             "rtrue" => {
                 self.ret(1);
@@ -1174,21 +1209,41 @@ impl Machine {
                 let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
                 let y = self.header.dynamic_start + self.read_var(i.args[1]) as usize;
                 let max_length = self.memory.read_u8(x) as usize;
-                let max_parse = self.memory.read_u8(y) as usize;
+                let _max_parse = self.memory.read_u8(y) as usize;
 
                 let mut input = self.io.input();
                 input = input.trim().to_lowercase();
-                for (i, c) in input.chars().enumerate() {
-                    if i < max_length {
-                        self.memory.write_u8(x + 1 + i, c as u8);
-                    }
+                let end = std::cmp::min(max_length, input.len());
+                for (i, c) in input[..end].bytes().enumerate() {
+                    self.memory.write_u8(x + 1 + i, c);
                 }
-                self.memory.write_u8(x + input.len() + 1, 0);
+                self.memory.write_u8(x + end + 1, 0);
 
                 let tokens: Vec<_> =
                     input.split(|c| c == ' ' || self.dictionary.separators.iter().any(|x| *x == c))
                         .collect();
                 self.memory.write_u8(y + 1, tokens.len() as u8);
+            }
+            "dec_chk" => {
+                let x = match i.args[0] {
+                    Operand::Large(x) => x as u8,
+                    Operand::Small(x) => x,
+                    _ => 0,
+                };
+                let y = self.read_var(i.args[1]) as i16;
+                let old = self.read_var(Operand::Variable(x)) as i16;
+                self.write_var(Return::Variable(x), (old - 1) as u16);
+                self.jump(i, old - 1 < y);
+            }
+            "mul" => {
+                let x = self.read_var(i.args[0]) as i16;
+                let y = self.read_var(i.args[1]) as i16;
+                self.write_var(i.ret, (x * y) as u16);
+            }
+            "test" => {
+                let x = self.read_var(i.args[0]);
+                let y = self.read_var(i.args[1]);
+                self.jump(i, (x & y) == y);
             }
             _ => return MachineState::Break(format!("unimplemented instruction:\n{}", i)),
         }
@@ -1199,14 +1254,16 @@ impl Machine {
     }
 
     fn step(&mut self) {
-        loop {
-            let i = self.decode();
-            #[cfg(debug_assertions)]
-            self.io.log(&format!("{}", i));
-            match self.execute(i) {
-                MachineState::Continue => {},
-                MachineState::Break(s) => { self.io.log(&s); break; }
-                MachineState::GetInput => { break; }
+        if !self.finished {
+            loop {
+                let i = self.decode();
+                #[cfg(debug_assertions)]
+                self.io.log(&format!("{}", i));
+                match self.execute(i) {
+                    MachineState::Continue => {},
+                    MachineState::Break(s) => { self.io.log(&s); self.finished = true; break; }
+                    MachineState::GetInput => { break; }
+                }
             }
         }
     }
@@ -1262,6 +1319,15 @@ fn get_machine() -> Machine {
 pub extern "C" fn initialize() -> *mut Machine {
     let machine = Box::new(get_machine());
     Box::into_raw(machine)
+}
+
+#[cfg(not(feature = "cli"))]
+#[no_mangle]
+pub extern "C" fn key_pressed(machine: *mut Machine, key: u8) {
+    let mut machine: Box<Machine> = unsafe { Box::from_raw( machine ) };
+    machine.io.key_down(key);
+    machine.io.draw();
+    std::mem::forget(machine);
 }
 
 #[cfg(not(feature = "cli"))]
