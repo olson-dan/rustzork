@@ -35,8 +35,8 @@ fetch('target/wasm32-unknown-unknown/release/rustzork.wasm')
 .then(response => response.arrayBuffer())
 .then(bytes => WebAssembly.instantiate(bytes, {
     env: {
-        should_break: function() {
-            console.log( "Should break" );
+        debug_trace: function(x) {
+            console.log( "debug trace", x );
         },
         clear: function() {
             ctx.clearRect(0, 0, width*charWidth, height*charHeight);

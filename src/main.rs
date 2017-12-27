@@ -3,9 +3,6 @@ extern crate clap;
 
 use std::cmp;
 use std::fmt;
-use std::fs::File;
-use std::io;
-use std::io::Read;
 use std::io::Write;
 use std::str;
 
@@ -20,7 +17,8 @@ enum Operand {
 #[cfg(not(feature = "cli"))]
 extern {
     fn clear();
-    fn should_break();
+    #[allow(dead_code)]
+    fn debug_trace(x: i32);
     fn put_line(x: i32, y: i32, text: *const u8, len: i32, r: i32, g: i32, b: i32);
 }
 
@@ -29,13 +27,12 @@ struct ZIO {
     buffer: String,
     input: String,
     flushed: bool,
-    polling: bool,
 }
 
 #[cfg(not(feature = "cli"))]
 impl ZIO {
     fn new() -> ZIO {
-        ZIO { buffer: String::new(), input: String::new(), flushed: true, polling: false, }
+        ZIO { buffer: String::new(), input: String::new(), flushed: true, }
     }
     fn print(&mut self, s : &str) -> () {
         if s.ends_with("n") {
@@ -92,15 +89,12 @@ impl ZIO {
         println!("{}", s);
     }
     fn poll_input(&mut self) -> bool {
-        false
-        /*
-        let stdin = io::stdin();
+        let stdin = std::io::stdin();
         if let Ok(_) = stdin.read_line(&mut self.input) {
             true
         } else {
             false
         }
-        */
     }
     fn input(&self) -> String {
         self.input.clone()
@@ -820,12 +814,17 @@ impl Header {
     }
 }
 
+enum MachineState {
+    Continue,
+    GetInput,
+    Break(String),
+}
+
 pub struct Machine {
     memory: Memory,
     header: Header,
     dictionary: Dictionary,
     ip: usize,
-    finished: bool,
     io: ZIO,
 }
 
@@ -836,7 +835,6 @@ impl Machine {
             dictionary: Dictionary::new(&memory, memory.read_u16(0x08) as usize),
             memory: memory,
             header: header,
-            finished: false,
             io: ZIO::new(),
         }
     }
@@ -957,7 +955,7 @@ impl Machine {
         Instruction::new(&self.memory, self.ip)
     }
 
-    fn execute(&mut self, i: Instruction) -> Result<(), String> {
+    fn execute(&mut self, i: Instruction) -> MachineState {
         let oldip = self.ip;
         let length = i.length;
         match i.name() {
@@ -1170,11 +1168,8 @@ impl Machine {
                 self.ret(x);
             }
             "sread" => {
-                self.finished = true;
-                self.io.polling = true;
-                return Ok(());
                 if !self.io.poll_input() {
-                    return Ok(())
+                    return MachineState::GetInput;
                 }
                 let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
                 let y = self.header.dynamic_start + self.read_var(i.args[1]) as usize;
@@ -1195,17 +1190,33 @@ impl Machine {
                         .collect();
                 self.memory.write_u8(y + 1, tokens.len() as u8);
             }
-            _ => return Err(format!("unimplemented instruction:\n{}", i)),
+            _ => return MachineState::Break(format!("unimplemented instruction:\n{}", i)),
         }
         if self.ip == oldip {
             self.ip += length;
         }
-        Ok(())
+        MachineState::Continue
+    }
+
+    fn step(&mut self) {
+        loop {
+            let i = self.decode();
+            #[cfg(debug_assertions)]
+            self.io.log(&format!("{}", i));
+            match self.execute(i) {
+                MachineState::Continue => {},
+                MachineState::Break(s) => { self.io.log(&s); break; }
+                MachineState::GetInput => { break; }
+            }
+        }
     }
 }
 
 #[cfg(feature = "cli")]
 fn open_z3(filename: &str) -> Result<Machine, std::io::Error> {
+    use std::fs::File;
+    use std::io::Read;
+
     let mut file = try!(File::open(filename));
     let mut buffer: Vec<u8> = Vec::new();
     try!(file.read_to_end(&mut buffer));
@@ -1257,18 +1268,7 @@ pub extern "C" fn initialize() -> *mut Machine {
 #[no_mangle]
 pub extern "C" fn update(machine: *mut Machine) {
     let mut machine: Box<Machine> = unsafe { Box::from_raw( machine ) };
-    while !machine.finished {
-        let i = machine.decode();
-        //machine.io.log(&format!("{}", i));
-        if let Err(e) = machine.execute(i) {
-            machine.io.log(&format!("{}", e));
-            machine.finished = true;
-        }
-        if machine.io.polling {
-            unsafe { should_break(); }
-            break;
-        }
-    }
+    machine.step();
     machine.io.draw();
     std::mem::forget(machine);
 }
@@ -1276,13 +1276,5 @@ pub extern "C" fn update(machine: *mut Machine) {
 fn main() {
     let mut machine = get_machine();
 
-    while !machine.finished {
-        let i = machine.decode();
-        #[cfg(debug_assertions)]
-        machine.io.log(&format!("{}", i));
-        if let Err(e) = machine.execute(i) {
-            println!("{}", e);
-            break;
-        }
-    }
+    machine.step();
 }
