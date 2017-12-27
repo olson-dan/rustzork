@@ -1,0 +1,55 @@
+<style>
+        body {
+          color: white;
+          font-family: arial;
+          flex-direction: column;
+          background-color: black;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        </style>
+<body>
+    <div>This is supposed to be zork.</div>
+</body>
+
+<script>
+var width = 80;
+var height = 25;
+var charWidth = 10;
+var charHeight = 12;
+
+var c = document.createElement('canvas');
+c.width = width * charWidth;
+c.height = height * charHeight;
+document.body.append(c);
+
+var ctx = c.getContext('2d');
+ctx.textAlign = "center";
+ctx.font = '12px arial';
+
+var machine_ptr;
+var wasm_instance;
+
+fetch('target/wasm32-unknown-unknown/release/rustzork.wasm')
+.then(response => response.arrayBuffer())
+.then(bytes => WebAssembly.instantiate(bytes, {
+    env: {
+        put_character: function(x,y,char,r,g,b) {
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.clearRect(x*charWidth, y*charHeight, charWidth, charHeight);
+            ctx.fillText(String.fromCharCode(char), x*charWidth+charWidth/2, y*charHeight+charHeight/2);
+            //console.log(String.fromCharCode(char));
+        }
+    }
+})
+.then( results => {
+    wasm_instance = results.instance;
+    machine_ptr = results.instance.exports.initialize();
+    function update() {
+        window.requestAnimationFrame(update);
+        results.instance.exports.update(machine_ptr);
+    }
+    update();
+}));
+</script>

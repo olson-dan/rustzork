@@ -3,6 +3,9 @@ name = "rustzork"
 version = "0.1.0"
 authors = ["olson-dan <olson-dan@users.noreply.github.com>"]
 
+[features]
+default = ["cli"]
+cli = ["clap"]
+
 [dependencies]
-clap = "*"
-matches = "0.1"
+clap = { version = "2.20.1", optional = true }

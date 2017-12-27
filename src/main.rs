@@ -1,3 +1,4 @@
+#[cfg(feature = "cli")]
 extern crate clap;
 
 use std::cmp;
@@ -7,7 +8,6 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::str;
-use clap::{App, Arg};
 
 #[derive(Debug, Copy, Clone)]
 enum Operand {
@@ -15,6 +15,87 @@ enum Operand {
     Small(u8),
     Variable(u8),
     Omitted,
+}
+
+#[cfg(not(feature = "cli"))]
+extern {
+    fn put_character(x: i32,y: i32,char: i32,r: i32,g: i32,b: i32);
+}
+
+#[cfg(not(feature = "cli"))]
+struct ZIO {
+    buffer: String,
+}
+
+#[cfg(not(feature = "cli"))]
+impl ZIO {
+    fn new() -> ZIO {
+        ZIO { buffer: String::new() }
+    }
+    fn print(&mut self, s : &str) -> () {
+        self.buffer += s;
+    }
+    fn flush(&mut self, ) -> Result<(), std::io::Error> {
+        Ok(())
+    }
+    fn log(&mut self, s: &str) -> () {
+        self.buffer += s;
+        self.buffer += "\n";
+    }
+    fn draw(&self) -> () {
+        let max_lines = 25;
+        let lines : Vec<_> = self.buffer.lines().collect();
+        let start = if lines.len() > max_lines { lines.len() - max_lines } else { 0 };
+        for (y,l) in lines[start ..].iter().enumerate() {
+            for (x,c) in l.chars().enumerate() {
+                unsafe { put_character(x as i32, y as i32, c as i32, 255, 255, 255); }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "cli")]
+struct ZIO {
+}
+
+#[cfg(feature = "cli")]
+impl ZIO {
+    fn new() -> ZIO {
+        ZIO { }
+    }
+    fn print(&mut self, s : &str) -> () {
+        print!("{}", s);
+    }
+    fn flush(&mut self, ) -> Result<(), std::io::Error> {
+        std::io::stdout().flush()
+    }
+    fn log(&mut self, s: &str) -> () {
+        println!("{}", s);
+    }
+    fn draw(&self) -> () {}
+}
+
+#[cfg(not(feature = "cli"))]
+#[no_mangle]
+pub extern "C" fn initialize() -> *mut Machine {
+    let machine = Box::new(get_machine());
+    Box::into_raw(machine)
+}
+
+#[cfg(not(feature = "cli"))]
+#[no_mangle]
+pub extern "C" fn update(machine: *mut Machine) {
+    let mut machine: Box<Machine> = unsafe { Box::from_raw( machine ) };
+    if !machine.finished {
+        let i = machine.decode();
+        //machine.io.log(&format!("{}", i));
+        if let Err(e) = machine.execute(i) {
+            machine.io.log(&format!("{}", e));
+            machine.finished = true;
+        }
+    }
+    machine.io.draw();
+    std::mem::forget(machine);
 }
 
 impl fmt::Display for Operand {
@@ -63,9 +144,9 @@ struct Memory {
 }
 
 impl Memory {
-    fn new(buffer: Vec<u8>) -> Memory {
+    fn new(buffer: &[u8]) -> Memory {
         Memory {
-            memory: buffer,
+            memory: Vec::from(buffer),
             stack: Vec::new(),
             frames: Vec::new(),
         }
@@ -729,17 +810,19 @@ impl Header {
     }
 }
 
-struct Machine {
+pub struct Machine {
     memory: Memory,
     header: Header,
     dictionary: Dictionary,
     ip: usize,
     finished: bool,
+    io: ZIO,
 }
 
 impl Machine {
     fn new(memory: Memory, header: Header) -> Machine {
         Machine {
+            io: ZIO::new(),
             ip: memory.read_u16(0x6) as usize,
             dictionary: Dictionary::new(&memory, memory.read_u16(0x08) as usize),
             memory: memory,
@@ -938,12 +1021,13 @@ impl Machine {
             }
             "print" => {
                 if let Some(s) = i.string {
-                    print!("{}", s);
-                    std::io::stdout().flush();
+                    self.io.print(&format!("{}", s));
+                    if let Err(_) = self.io.flush() {
+                    }
                 }
             }
             "new_line" => {
-                println!("");
+                self.io.print("\n");
             }
             "loadb" => {
                 let x = self.read_var(i.args[0]) as usize;
@@ -959,7 +1043,7 @@ impl Machine {
             }
             "print_num" => {
                 let x = self.read_var(i.args[0]);
-                print!("{}", x);
+                self.io.print(&format!("{}", x));
             }
             "inc_chk" => {
                 let x = match i.args[0] {
@@ -975,7 +1059,7 @@ impl Machine {
             "print_char" => {
                 let x = self.read_var(i.args[0]) as u8;
                 let v = vec![x];
-                print!("{}", str::from_utf8(&v).unwrap());
+                self.io.print(&format!("{}", str::from_utf8(&v).unwrap()));
             }
             "rtrue" => {
                 self.ret(1);
@@ -1024,7 +1108,7 @@ impl Machine {
             "print_obj" => {
                 let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
                 let obj = Object::new(&self.memory, x);
-                print!("{}", obj.name);
+                self.io.print(&format!("{}", obj.name));
             }
             "get_parent" => {
                 let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
@@ -1108,18 +1192,21 @@ impl Machine {
     }
 }
 
+#[cfg(feature = "cli")]
 fn open_z3(filename: &str) -> Result<Machine, std::io::Error> {
     let mut file = try!(File::open(filename));
     let mut buffer: Vec<u8> = Vec::new();
     try!(file.read_to_end(&mut buffer));
 
-    let memory = Memory::new(buffer);
+    let memory = Memory::new(&buffer);
     let header = Header::new(&memory);
 
     Ok(Machine::new(memory, header))
 }
 
-fn main() {
+#[cfg(feature = "cli")]
+fn get_machine() -> Machine {
+    use clap::{App, Arg};
     let matches = App::new("rustzork")
         .version("1.0")
         .about("Interpreter for V3 zmachine spec.")
@@ -1127,18 +1214,33 @@ fn main() {
         .get_matches();
 
     let filename = matches.value_of("file").unwrap_or("zork.z3");
-    let mut machine = match open_z3(filename) {
+
+    let machine = match open_z3(filename) {
         Ok(x) => x,
         Err(e) => {
             println!("Error opening file: {}", e);
             std::process::exit(1);
         }
     };
+    machine
+}
+
+#[cfg(not(feature = "cli"))]
+fn get_machine() -> Machine {
+    let bytes = include_bytes!("../zork.z3");
+    let memory = Memory::new(bytes);
+    let header = Header::new(&memory);
+
+    Machine::new(memory, header)
+}
+
+fn main() {
+    let mut machine = get_machine();
 
     while !machine.finished {
         let i = machine.decode();
         #[cfg(debug_assertions)]
-        println!("{}", i);
+        machine.io.log(&format!("{}", i));
         if let Err(e) = machine.execute(i) {
             println!("{}", e);
             break;
