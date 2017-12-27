@@ -19,36 +19,54 @@ enum Operand {
 
 #[cfg(not(feature = "cli"))]
 extern {
-    fn put_character(x: i32,y: i32,char: i32,r: i32,g: i32,b: i32);
+    fn clear();
+    fn should_break();
+    fn put_line(x: i32, y: i32, text: *const u8, len: i32, r: i32, g: i32, b: i32);
 }
 
 #[cfg(not(feature = "cli"))]
 struct ZIO {
     buffer: String,
+    input: String,
+    flushed: bool,
+    polling: bool,
 }
 
 #[cfg(not(feature = "cli"))]
 impl ZIO {
     fn new() -> ZIO {
-        ZIO { buffer: String::new() }
+        ZIO { buffer: String::new(), input: String::new(), flushed: true, polling: false, }
     }
     fn print(&mut self, s : &str) -> () {
+        if s.ends_with("n") {
+            self.flushed = false;
+        }
         self.buffer += s;
     }
     fn flush(&mut self, ) -> Result<(), std::io::Error> {
+        self.flushed = false;
         Ok(())
     }
     fn log(&mut self, s: &str) -> () {
         self.buffer += s;
         self.buffer += "\n";
+        self.flushed = false;
     }
-    fn draw(&self) -> () {
-        let max_lines = 25;
-        let lines : Vec<_> = self.buffer.lines().collect();
-        let start = if lines.len() > max_lines { lines.len() - max_lines } else { 0 };
-        for (y,l) in lines[start ..].iter().enumerate() {
-            for (x,c) in l.chars().enumerate() {
-                unsafe { put_character(x as i32, y as i32, c as i32, 255, 255, 255); }
+    fn poll_input(&mut self) -> bool {
+        false
+    }
+    fn input(&self) -> String {
+        self.input.clone()
+    }
+    fn draw(&mut self) -> () {
+        if !self.flushed {
+            self.flushed = true;
+            unsafe { clear(); }
+            let max_lines = 25;
+            let lines : Vec<_> = self.buffer.lines().collect();
+            let start = if lines.len() > max_lines { lines.len() - max_lines } else { 0 };
+            for (y,l) in lines[start ..].iter().enumerate() {
+                unsafe { put_line(0, y as i32, l.as_ptr(), l.len() as i32, 255, 255, 255); }
             }
         }
     }
@@ -56,12 +74,13 @@ impl ZIO {
 
 #[cfg(feature = "cli")]
 struct ZIO {
+    input: String,
 }
 
 #[cfg(feature = "cli")]
 impl ZIO {
     fn new() -> ZIO {
-        ZIO { }
+        ZIO { input: String::new() }
     }
     fn print(&mut self, s : &str) -> () {
         print!("{}", s);
@@ -72,41 +91,32 @@ impl ZIO {
     fn log(&mut self, s: &str) -> () {
         println!("{}", s);
     }
-    fn draw(&self) -> () {}
-}
-
-#[cfg(not(feature = "cli"))]
-#[no_mangle]
-pub extern "C" fn initialize() -> *mut Machine {
-    let machine = Box::new(get_machine());
-    Box::into_raw(machine)
-}
-
-#[cfg(not(feature = "cli"))]
-#[no_mangle]
-pub extern "C" fn update(machine: *mut Machine) {
-    let mut machine: Box<Machine> = unsafe { Box::from_raw( machine ) };
-    if !machine.finished {
-        let i = machine.decode();
-        //machine.io.log(&format!("{}", i));
-        if let Err(e) = machine.execute(i) {
-            machine.io.log(&format!("{}", e));
-            machine.finished = true;
+    fn poll_input(&mut self) -> bool {
+        false
+        /*
+        let stdin = io::stdin();
+        if let Ok(_) = stdin.read_line(&mut self.input) {
+            true
+        } else {
+            false
         }
+        */
     }
-    machine.io.draw();
-    std::mem::forget(machine);
+    fn input(&self) -> String {
+        self.input.clone()
+    }
+    fn draw(&self) -> () {}
 }
 
 impl fmt::Display for Operand {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &Operand::Large(x) => write!(f, "#{:04x}", x),
-            &Operand::Small(x) => write!(f, "#{:02x}", x),
-            &Operand::Variable(x) if x == 0 => write!(f, "(SP)+"),
-            &Operand::Variable(x) if x >= 0x10 => write!(f, "G{:02x}", x - 0x10),
-            &Operand::Variable(x) => write!(f, "L{:02x}", x - 1),
-            &Operand::Omitted => write!(f, ""),
+        match *self {
+            Operand::Large(x) => write!(f, "#{:04x}", x),
+            Operand::Small(x) => write!(f, "#{:02x}", x),
+            Operand::Variable(x) if x == 0 => write!(f, "(SP)+"),
+            Operand::Variable(x) if x >= 0x10 => write!(f, "G{:02x}", x - 0x10),
+            Operand::Variable(x) => write!(f, "L{:02x}", x - 1),
+            Operand::Omitted => write!(f, ""),
         }
     }
 }
@@ -822,12 +832,12 @@ pub struct Machine {
 impl Machine {
     fn new(memory: Memory, header: Header) -> Machine {
         Machine {
-            io: ZIO::new(),
             ip: memory.read_u16(0x6) as usize,
             dictionary: Dictionary::new(&memory, memory.read_u16(0x08) as usize),
             memory: memory,
             header: header,
             finished: false,
+            io: ZIO::new(),
         }
     }
 
@@ -1160,19 +1170,22 @@ impl Machine {
                 self.ret(x);
             }
             "sread" => {
+                self.finished = true;
+                self.io.polling = true;
+                return Ok(());
+                if !self.io.poll_input() {
+                    return Ok(())
+                }
                 let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
                 let y = self.header.dynamic_start + self.read_var(i.args[1]) as usize;
                 let max_length = self.memory.read_u8(x) as usize;
                 let max_parse = self.memory.read_u8(y) as usize;
 
-                let stdin = io::stdin();
-                let mut input = String::new();
-                if let Ok(_) = stdin.read_line(&mut input) {
-                    input = input.trim().to_lowercase();
-                    for (i, c) in input.chars().enumerate() {
-                        if i < max_length {
-                            self.memory.write_u8(x + 1 + i, c as u8);
-                        }
+                let mut input = self.io.input();
+                input = input.trim().to_lowercase();
+                for (i, c) in input.chars().enumerate() {
+                    if i < max_length {
+                        self.memory.write_u8(x + 1 + i, c as u8);
                     }
                 }
                 self.memory.write_u8(x + input.len() + 1, 0);
@@ -1181,7 +1194,6 @@ impl Machine {
                     input.split(|c| c == ' ' || self.dictionary.separators.iter().any(|x| *x == c))
                         .collect();
                 self.memory.write_u8(y + 1, tokens.len() as u8);
-
             }
             _ => return Err(format!("unimplemented instruction:\n{}", i)),
         }
@@ -1232,6 +1244,33 @@ fn get_machine() -> Machine {
     let header = Header::new(&memory);
 
     Machine::new(memory, header)
+}
+
+#[cfg(not(feature = "cli"))]
+#[no_mangle]
+pub extern "C" fn initialize() -> *mut Machine {
+    let machine = Box::new(get_machine());
+    Box::into_raw(machine)
+}
+
+#[cfg(not(feature = "cli"))]
+#[no_mangle]
+pub extern "C" fn update(machine: *mut Machine) {
+    let mut machine: Box<Machine> = unsafe { Box::from_raw( machine ) };
+    while !machine.finished {
+        let i = machine.decode();
+        //machine.io.log(&format!("{}", i));
+        if let Err(e) = machine.execute(i) {
+            machine.io.log(&format!("{}", e));
+            machine.finished = true;
+        }
+        if machine.io.polling {
+            unsafe { should_break(); }
+            break;
+        }
+    }
+    machine.io.draw();
+    std::mem::forget(machine);
 }
 
 fn main() {

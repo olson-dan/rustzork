@@ -17,7 +17,7 @@
 var width = 80;
 var height = 25;
 var charWidth = 10;
-var charHeight = 12;
+var charHeight = 20;
 
 var c = document.createElement('canvas');
 c.width = width * charWidth;
@@ -25,7 +25,7 @@ c.height = height * charHeight;
 document.body.append(c);
 
 var ctx = c.getContext('2d');
-ctx.textAlign = "center";
+ctx.textAlign = "left";
 ctx.font = '12px arial';
 
 var machine_ptr;
@@ -35,10 +35,21 @@ fetch('target/wasm32-unknown-unknown/release/rustzork.wasm')
 .then(response => response.arrayBuffer())
 .then(bytes => WebAssembly.instantiate(bytes, {
     env: {
-        put_character: function(x,y,char,r,g,b) {
+        should_break: function() {
+            console.log( "Should break" );
+        },
+        clear: function() {
+            ctx.clearRect(0, 0, width*charWidth, height*charHeight);
+        },
+        put_line: function(x,y,ptr,len,r,g,b) {
             ctx.fillStyle = `rgb(${r},${g},${b})`;
-            ctx.clearRect(x*charWidth, y*charHeight, charWidth, charHeight);
-            ctx.fillText(String.fromCharCode(char), x*charWidth+charWidth/2, y*charHeight+charHeight/2);
+            var text = "";
+            var memory = new Uint8Array(wasm_instance.exports.memory.buffer, ptr, len);
+            for( let n of memory.values() )
+            {
+                text += String.fromCharCode( n );
+            }
+            ctx.fillText(text, x*charWidth + charWidth / 2, y*charHeight + charHeight);
             //console.log(String.fromCharCode(char));
         }
     }
