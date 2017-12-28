@@ -992,6 +992,39 @@ impl Machine {
     }
 
     fn execute(&mut self, i: Instruction) -> MachineState {
+        macro_rules! convert_arg {
+            ($e:expr, Object) => (
+                {
+                    let x = self.header.dynamic_start + $e as usize;
+                    Object::new(&self.memory, x)
+                }
+            );
+            ($e:expr, Variable) => (
+                match i.args[0] {
+                    Operand::Large(x) => x as u8,
+                    Operand::Small(x) => x,
+                    _ => 0,
+                }
+            );
+            ($e:expr, $type:tt) => (
+                $e as $type
+            );
+        }
+        macro_rules! read_args {
+            ($arg1_type:tt, $arg2_type:tt, $arg3_type:tt) => (
+                (convert_arg!(self.read_var(i.args[0]),$arg1_type),
+                convert_arg!(self.read_var(i.args[1]),$arg2_type),
+                convert_arg!(self.read_var(i.args[2]),$arg3_type))
+            );
+            ($arg1_type:tt, $arg2_type:tt) => (
+                (convert_arg!(self.read_var(i.args[0]),$arg1_type),
+                convert_arg!(self.read_var(i.args[1]),$arg2_type))
+            );
+            ($arg1_type:tt) => (
+                convert_arg!(self.read_var(i.args[0]),$arg1_type)
+            );
+        }
+
         let oldip = self.ip;
         let length = i.length;
         match i.name() {
@@ -999,62 +1032,50 @@ impl Machine {
                 self.call(i);
             }
             "add" => {
-                let x = self.read_var(i.args[0]) as i16;
-                let y = self.read_var(i.args[1]) as i16;
+                let (x,y) = read_args!(i16, i16);
                 self.write_var(i.ret, (x + y) as u16);
             }
             "je" => {
-                let x = self.read_var(i.args[0]);
+                let x = read_args!(u16);
                 let compare = i.args[1..].iter().any(|&b| x == self.read_var(b));
                 self.jump(i, compare);
             }
             "sub" => {
-                let x = self.read_var(i.args[0]) as i16;
-                let y = self.read_var(i.args[1]) as i16;
+                let (x,y) = read_args!(i16, i16);
                 self.write_var(i.ret, (x - y) as u16);
             }
             "jz" => {
-                let x = self.read_var(i.args[0]);
+                let x = read_args!(u16);
                 self.jump(i, x == 0);
             }
             "storew" => {
-                let x = self.read_var(i.args[0]) as usize;
-                let y = self.read_var(i.args[1]) as usize;
-                let val = self.read_var(i.args[2]);
+                let (x, y, val) = read_args!(usize, usize, u16);
                 let addr = x + 2 * y;
-                let offset = self.header.dynamic_start + addr * 2;
+                let offset = self.header.dynamic_start + addr;
                 self.memory.write_u16(offset, val);
             }
             "ret" => {
-                let val = self.read_var(i.args[0]);
+                let val = read_args!(u16);
                 self.ret(val);
             }
             "loadw" => {
-                let x = self.read_var(i.args[0]) as usize;
-                let y = self.read_var(i.args[1]) as usize;
-                let offset = self.header.dynamic_start + x + 2 * y;
+                let (x, y) = read_args!(usize, usize);
+                let addr = x + 2 * y;
+                let offset = self.header.dynamic_start + addr;
                 let val = self.memory.read_u16(offset);
                 self.write_var(i.ret, val);
             }
             "jump" => {
-                let x = self.read_var(i.args[0]) as i16;
+                let x = read_args!(i16);
                 self.ip = (self.ip as i32 + i.length as i32 + x as i32 - 2) as usize;
             }
             "put_prop" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let y = self.header.dynamic_start + self.read_var(i.args[1]) as usize;
-                let val = self.read_var(i.args[2]);
-                let obj = Object::new(&self.memory, x);
-                let prop = obj.get_property(&self.memory, y);
+                let (obj, y, val) = read_args!(Object, usize, u16);
+                let prop = obj.get_property(&self.memory, self.header.dynamic_start + y);
                 prop.write(&mut self.memory, val);
             }
             "store" => {
-                let x = match i.args[0] {
-                    Operand::Large(x) => x as u8,
-                    Operand::Small(x) => x,
-                    _ => 0,
-                };
-                let y = self.read_var(i.args[1]);
+                let (x, y) = read_args!(Variable, u16);
                 self.write_var(Return::Variable(x), y);
             }
             "test_attr" => {
@@ -1066,52 +1087,41 @@ impl Machine {
             "print" => {
                 if let Some(s) = i.string {
                     self.io.print(&format!("{}", s));
-                    if let Err(_) = self.io.flush() {
-                    }
+                    if let Err(_) = self.io.flush() {}
                 }
             }
             "new_line" => {
                 self.io.print("\n");
             }
             "loadb" => {
-                let x = self.read_var(i.args[0]) as usize;
-                let y = self.read_var(i.args[1]) as usize;
+                let (x,y) = read_args!(usize, usize);
                 let offset = self.header.dynamic_start + x + y;
                 let val = self.memory.read_u8(offset) as u16;
                 self.write_var(i.ret, val);
             }
             "and" => {
-                let x = self.read_var(i.args[0]);
-                let y = self.read_var(i.args[1]);
+                let (x,y) = read_args!(u16, u16);
                 self.write_var(i.ret, x & y);
             }
             "print_num" => {
-                let x = self.read_var(i.args[0]);
+                let x = read_args!(u16);
                 self.io.print(&format!("{}", x));
             }
             "inc_chk" => {
-                let x = match i.args[0] {
-                    Operand::Large(x) => x as u8,
-                    Operand::Small(x) => x,
-                    _ => 0,
-                };
-                let y = self.read_var(i.args[1]) as i16;
+                let (x, y) = read_args!(Variable, i16);
                 let old = self.read_var(Operand::Variable(x)) as i16;
                 self.write_var(Return::Variable(x), (old + 1) as u16);
                 self.jump(i, old + 1 > y);
             }
             "print_char" => {
-                let x = self.read_var(i.args[0]) as u8;
+                let x = read_args!(u8);
                 self.io.print(&format!("{}", str::from_utf8(&[x]).unwrap()));
             }
             "rtrue" => {
                 self.ret(1);
             }
             "insert_obj" => {
-                let x = self.read_var(i.args[0]) as usize;
-                let y = self.read_var(i.args[1]) as usize;
-                let mut obj = Object::new(&self.memory, x);
-                let mut dest = Object::new(&self.memory, y);
+                let (mut obj, mut dest) = read_args!(Object, Object);
 
                 obj.remove(&mut self.memory);
 
@@ -1123,79 +1133,60 @@ impl Machine {
                 dest.write(&mut self.memory);
             }
             "push" => {
-                let x = self.read_var(i.args[0]);
+                let x = read_args!(u16);
                 self.write_var(Return::Variable(0), x);
             }
             "pull" => {
-                let x = match i.args[0] {
-                    Operand::Large(x) => x as u8,
-                    Operand::Small(x) => x,
-                    _ => 0,
-                };
+                let x = read_args!(Variable);
                 let val = self.read_var(Operand::Variable(0));
                 self.write_var(Return::Variable(x), val);
             }
             "set_attr" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
+                let mut obj = read_args!(Object);
                 let y = 1 << (31 - self.read_var(i.args[1]) as usize);
-                let mut obj = Object::new(&self.memory, x);
                 obj.attrib = obj.attrib | y;
                 obj.write(&mut self.memory);
             }
             "jin" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let y = self.read_var(i.args[1]) as usize;
-                let obj = Object::new(&self.memory, x);
+                let (obj, y) = read_args!(Object, usize);
                 self.jump(i, obj.parent == y);
             }
             "print_obj" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let obj = Object::new(&self.memory, x);
+                let obj = read_args!(Object);
                 self.io.print(&format!("{}", obj.name));
             }
             "get_parent" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let obj = Object::new(&self.memory, x);
+                let obj = read_args!(Object);
                 self.write_var(i.ret, obj.parent as u16);
             }
             "get_prop" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let y = self.read_var(i.args[1]) as usize;
-                let obj = Object::new(&self.memory, x);
+                let (obj, y) = read_args!(Object, usize);
                 let prop = obj.get_property(&self.memory, y);
                 let val = prop.read(&self.memory);
                 self.write_var(i.ret, val);
             }
             "jg" => {
-                let x = self.read_var(i.args[0]) as i16;
-                let y = self.read_var(i.args[1]) as i16;
+                let (x, y) = read_args!(i16, i16);
                 self.jump(i, x > y);
             }
             "get_child" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let obj = Object::new(&self.memory, x);
+                let obj = read_args!(Object);
                 self.write_var(i.ret, obj.child as u16);
             }
             "get_sibling" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let obj = Object::new(&self.memory, x);
+                let obj = read_args!(Object);
                 self.write_var(i.ret, obj.sibling as u16);
             }
             "rfalse" => {
                 self.ret(0);
             }
             "inc" => {
-                let x = match i.args[0] {
-                    Operand::Large(x) => x as u8,
-                    Operand::Small(x) => x,
-                    _ => 0,
-                };
+                let x = read_args!(Variable);
                 let old = self.read_var(Operand::Variable(x)) as i16;
                 self.write_var(Return::Variable(x), (old + 1) as u16);
             }
             "jl" => {
-                let x = self.read_var(i.args[0]) as i16;
-                let y = self.read_var(i.args[1]) as i16;
+                let(x, y) = read_args!(i16, i16);
                 self.jump(i, x < y);
             }
             "ret_popped" => {
@@ -1208,42 +1199,52 @@ impl Machine {
                 }
                 let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
                 let y = self.header.dynamic_start + self.read_var(i.args[1]) as usize;
-                let max_length = self.memory.read_u8(x) as usize;
-                let _max_parse = self.memory.read_u8(y) as usize;
 
                 let mut input = self.io.input();
                 input = input.trim().to_lowercase();
-                let end = std::cmp::min(max_length, input.len());
-                for (i, c) in input[..end].bytes().enumerate() {
+                let max_length = std::cmp::min(self.memory.read_u8(x) as usize, input.len());
+
+                for (i, c) in input[..max_length].bytes().enumerate() {
                     self.memory.write_u8(x + 1 + i, c);
                 }
-                self.memory.write_u8(x + end + 1, 0);
+                self.memory.write_u8(x + max_length + 1, 0);
 
                 let tokens: Vec<_> =
                     input.split(|c| c == ' ' || self.dictionary.separators.iter().any(|x| *x == c))
                         .collect();
-                self.memory.write_u8(y + 1, tokens.len() as u8);
+                let max_parse = std::cmp::min(self.memory.read_u8(y) as usize, tokens.len());
+                self.memory.write_u8(y + 1, max_parse as u8);
+                for (i, token) in tokens[..max_parse].iter().enumerate() {
+                    let offset = y + 2 + 4 * i;
+                    if let Some(zs) = self.dictionary.get_word(&token) {
+                        self.memory.write_u16(offset, zs.offset as u16);
+                    } else {
+                        self.memory.write_u16(offset, 0);
+                    }
+                    self.memory.write_u8(offset + 2, token.len() as u8);
+                    let index = input.find(token).unwrap();
+                    self.memory.write_u8(offset + 3, index as u8 + 1);
+                }
             }
             "dec_chk" => {
-                let x = match i.args[0] {
-                    Operand::Large(x) => x as u8,
-                    Operand::Small(x) => x,
-                    _ => 0,
-                };
-                let y = self.read_var(i.args[1]) as i16;
+                let (x, y) = read_args!(Variable, i16);
                 let old = self.read_var(Operand::Variable(x)) as i16;
                 self.write_var(Return::Variable(x), (old - 1) as u16);
                 self.jump(i, old - 1 < y);
             }
             "mul" => {
-                let x = self.read_var(i.args[0]) as i16;
-                let y = self.read_var(i.args[1]) as i16;
+                let (x, y) = read_args!(i16, i16);
                 self.write_var(i.ret, (x * y) as u16);
             }
             "test" => {
-                let x = self.read_var(i.args[0]);
-                let y = self.read_var(i.args[1]);
+                let (x, y) = read_args!(u16, u16);
                 self.jump(i, (x & y) == y);
+            }
+            "storeb" => {
+                let (x, y, val) = read_args!(usize, usize, u8);
+                let addr = x + 2 * y;
+                let offset = self.header.dynamic_start + addr;
+                self.memory.write_u8(offset, val);
             }
             _ => return MachineState::Break(format!("unimplemented instruction:\n{}", i)),
         }
