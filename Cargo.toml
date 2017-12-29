@@ -9,3 +9,4 @@ cli = ["clap"]
 
 [dependencies]
 clap = { version = "2.20.1", optional = true }
+rand = { git = "https://github.com/rust-lang-nursery/rand" }

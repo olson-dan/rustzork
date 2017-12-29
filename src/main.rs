@@ -1,5 +1,6 @@
 #[cfg(feature = "cli")]
 extern crate clap;
+extern crate rand;
 
 use std::cmp;
 use std::fmt;
@@ -123,6 +124,7 @@ impl ZIO {
         println!("{}", s);
     }
     fn poll_input(&mut self) -> bool {
+        self.input = String::new();
         let stdin = std::io::stdin();
         if let Ok(_) = stdin.read_line(&mut self.input) {
             true
@@ -586,15 +588,19 @@ impl Instruction {
             let mut offset = (0x80 & branch1) << 8;
             let len: usize;
             if (branch1 & 0x40) != 0 {
-                offset = offset | (branch1 & 0x3f);
+                offset |= branch1 & 0x3f;
                 len = 1;
             } else {
-                offset = offset | ((branch1 & 0x1f) << 8) |
-                         (memory.read_u8(self.offset + self.length + 1) as i32);
+                let branch2 = memory.read_u8(self.offset + self.length + 1) as i32;
+                offset |= (branch1 & 0x1f) << 8;
+                offset |= branch2;
                 len = 2;
             }
             let compare = (offset & 0x8000) != 0;
             offset = offset & 0x7fff;
+            if offset > 0x0fff {
+                offset = -(0x1fff - offset + 1);
+            }
             self.jump_offset = Some(offset);
             self.length = self.length + len;
             self.compare = Some(compare);
@@ -729,6 +735,18 @@ impl Object {
                     return Property::new(memory, default_addr);
                 }
                 Property { index: i, .. } if i == index => return p,
+                Property { length: l, .. } => addr = addr + l + 1,
+            }
+        }
+    }
+
+    fn get_property_opt(&self, memory: &Memory, index: usize) -> Option<Property> {
+        let mut addr = self.offset + 1 + self.name.length;
+        loop {
+            let p = Property::new(memory, addr);
+            match p {
+                Property { index: 0, .. } => return None,
+                Property { index: i, .. } if i == index => return Some(p),
                 Property { length: l, .. } => addr = addr + l + 1,
             }
         }
@@ -992,10 +1010,20 @@ impl Machine {
     }
 
     fn execute(&mut self, i: Instruction) -> MachineState {
+        macro_rules! address {
+            ($e:expr) => (
+                self.header.dynamic_start + $e
+            );
+        }
+        macro_rules! packed_address {
+            ($e:expr) => (
+                self.header.dynamic_start + 2 * $e
+            );
+        }
         macro_rules! convert_arg {
             ($e:expr, Object) => (
                 {
-                    let x = self.header.dynamic_start + $e as usize;
+                    let x = address!($e as usize);
                     Object::new(&self.memory, x)
                 }
             );
@@ -1051,8 +1079,7 @@ impl Machine {
             "storew" => {
                 let (x, y, val) = read_args!(usize, usize, u16);
                 let addr = x + 2 * y;
-                let offset = self.header.dynamic_start + addr;
-                self.memory.write_u16(offset, val);
+                self.memory.write_u16(address!(addr), val);
             }
             "ret" => {
                 let val = read_args!(u16);
@@ -1061,8 +1088,7 @@ impl Machine {
             "loadw" => {
                 let (x, y) = read_args!(usize, usize);
                 let addr = x + 2 * y;
-                let offset = self.header.dynamic_start + addr;
-                let val = self.memory.read_u16(offset);
+                let val = self.memory.read_u16(address!(addr));
                 self.write_var(i.ret, val);
             }
             "jump" => {
@@ -1071,7 +1097,7 @@ impl Machine {
             }
             "put_prop" => {
                 let (obj, y, val) = read_args!(Object, usize, u16);
-                let prop = obj.get_property(&self.memory, self.header.dynamic_start + y);
+                let prop = obj.get_property(&self.memory, address!(y));
                 prop.write(&mut self.memory, val);
             }
             "store" => {
@@ -1079,10 +1105,8 @@ impl Machine {
                 self.write_var(Return::Variable(x), y);
             }
             "test_attr" => {
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let y = 1 << (31 - self.read_var(i.args[1]) as usize);
-                let obj = Object::new(&self.memory, x);
-                self.jump(i, (obj.attrib & y) != 0);
+                let (obj, y) = read_args!(Object, usize);
+                self.jump(i, (obj.attrib & (1 << (31 - y))) != 0);
             }
             "print" => {
                 if let Some(s) = i.string {
@@ -1095,8 +1119,7 @@ impl Machine {
             }
             "loadb" => {
                 let (x,y) = read_args!(usize, usize);
-                let offset = self.header.dynamic_start + x + y;
-                let val = self.memory.read_u8(offset) as u16;
+                let val = self.memory.read_u8(address!(x + y)) as u16;
                 self.write_var(i.ret, val);
             }
             "and" => {
@@ -1142,9 +1165,8 @@ impl Machine {
                 self.write_var(Return::Variable(x), val);
             }
             "set_attr" => {
-                let mut obj = read_args!(Object);
-                let y = 1 << (31 - self.read_var(i.args[1]) as usize);
-                obj.attrib = obj.attrib | y;
+                let (mut obj, y) = read_args!(Object, usize);
+                obj.attrib |= 1 << (31 - y);
                 obj.write(&mut self.memory);
             }
             "jin" => {
@@ -1172,10 +1194,12 @@ impl Machine {
             "get_child" => {
                 let obj = read_args!(Object);
                 self.write_var(i.ret, obj.child as u16);
+                self.jump(i, obj.child != 0);
             }
             "get_sibling" => {
                 let obj = read_args!(Object);
                 self.write_var(i.ret, obj.sibling as u16);
+                self.jump(i, obj.sibling != 0);
             }
             "rfalse" => {
                 self.ret(0);
@@ -1197,8 +1221,8 @@ impl Machine {
                 if !self.io.poll_input() {
                     return MachineState::GetInput;
                 }
-                let x = self.header.dynamic_start + self.read_var(i.args[0]) as usize;
-                let y = self.header.dynamic_start + self.read_var(i.args[1]) as usize;
+                let x = address!(self.read_var(i.args[0]) as usize);
+                let y = address!(self.read_var(i.args[1]) as usize);
 
                 let mut input = self.io.input();
                 input = input.trim().to_lowercase();
@@ -1243,8 +1267,57 @@ impl Machine {
             "storeb" => {
                 let (x, y, val) = read_args!(usize, usize, u8);
                 let addr = x + 2 * y;
-                let offset = self.header.dynamic_start + addr;
-                self.memory.write_u8(offset, val);
+                self.memory.write_u8(address!(addr), val);
+            }
+            "clear_attr" => {
+                let (mut obj, y) = read_args!(Object, usize);
+                obj.attrib &= !(1 << (31 - y));
+                obj.write(&mut self.memory);
+            }
+            "get_prop_addr" => {
+                let (obj, y) = read_args!(Object, usize);
+                if let Some(prop) = obj.get_property_opt(&self.memory, y) {
+                    self.write_var(i.ret, prop.offset as u16 + 1);
+                } else {
+                    self.write_var(i.ret, 0);
+                }
+            }
+            "get_prop_len" => {
+                let x = read_args!(usize);
+                if x == 0 {
+                    self.write_var(i.ret, 0);
+                } else {
+                    let property = Property::new(&self.memory, x - 1);
+                    self.write_var(i.ret, property.length as u16);
+                }
+            }
+            "print_paddr" => {
+                let x = read_args!(usize);
+                let zs = ZString::new(&self.memory, packed_address!(x));
+                self.io.print(&format!("{}", zs));
+            }
+            "dec" => {
+                let x = read_args!(Variable);
+                let old = self.read_var(Operand::Variable(x)) as i16;
+                self.write_var(Return::Variable(x), (old - 1) as u16);
+            }
+            "print_ret" => {
+                if let Some(s) = i.string {
+                    self.io.print(&format!("{}\n", s));
+                }
+                self.ret(1);
+            }
+            "div" => {
+                let (x, y) = read_args!(i16, i16);
+                if y == 0 {
+                    return MachineState::Break(format!("divide by zero"));
+                }
+                self.write_var(i.ret, (x / y) as u16);
+            }
+            "print_addr" => {
+                let x = read_args!(usize);
+                let zs = ZString::new(&self.memory, address!(x));
+                self.io.print(&format!("{}", zs));
             }
             _ => return MachineState::Break(format!("unimplemented instruction:\n{}", i)),
         }
