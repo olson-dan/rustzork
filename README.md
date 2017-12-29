@@ -3,11 +3,13 @@ ZMachine V3 in Rust, now with WebAssembly support.
 
 It is not entirely finished.  There is no save/restore and there are some small bugs, but all instructions used in Zork 1 are implemented and the game is mostly playable.
 
-I've only known Rust for like 2 weeks so this might suck.
+I've only known Rust for like ~~2 weeks~~ a few months so this might suck.
 
 Partially ported from my F# one.
 
 Read my shitty blog post about zmachines: http://grumpygeneralist.blogspot.com/2014/08/write-zmachine.html
+
+As for a license I'm not sure but I assume it would not be considered legal to use this code or any derivative in another project, and I won't be taking PRs.  Sorry.
 
 ## WASM instructions
 
