@@ -4,8 +4,8 @@ extern crate rand;
 
 use std::cmp;
 use std::fmt;
-use std::io::Write;
 use std::str;
+use rand::{Rng, SeedableRng, StdRng, random};
 
 #[derive(Debug, Copy, Clone)]
 enum Operand {
@@ -118,6 +118,7 @@ impl ZIO {
         print!("{}", s);
     }
     fn flush(&mut self, ) -> Result<(), std::io::Error> {
+        use std::io::Write;
         std::io::stdout().flush()
     }
     fn log(&mut self, s: &str) -> () {
@@ -135,7 +136,6 @@ impl ZIO {
     fn input(&self) -> String {
         self.input.clone()
     }
-    fn draw(&self) -> () {}
 }
 
 impl fmt::Display for Operand {
@@ -567,7 +567,7 @@ impl Instruction {
                 (self.opcode >= 0x01 && self.opcode <= 0x04) || self.opcode == 0x08 ||
                 (self.opcode >= 0x0e && self.opcode <= 0x0f)
             }
-            Encoding::Var => self.opcode == 0x0,
+            Encoding::Var => self.opcode == 0x0 || self.opcode == 0x7,
             _ => false,
         } {
             self.ret = Return::Variable(memory.read_u8(self.offset + self.length));
@@ -752,6 +752,40 @@ impl Object {
         }
     }
 
+    fn get_next_property(&self, memory: &Memory, index: usize) -> Option<usize> {
+        let mut addr = self.offset + 1 + self.name.length;
+        let mut props : Vec<Property> = Vec::new();
+        loop {
+            let p = Property::new(memory, addr);
+            match p {
+                Property { index: 0, .. } => break,
+                Property { length: l, .. } => addr = addr + l + 1,
+            }
+            props.push(p);
+        }
+        let mut i = props.into_iter();
+        if index == 0 {
+            if let Some(p) = i.next() {
+                return Some(p.index);
+            } else {
+                // Error condition, no properties in property list (can't happen?).
+                return None;
+            }
+        } else {
+            while let Some(p) = i.next() {
+                if p.index == index {
+                    if let Some(p) = i.next() {
+                        return Some(p.index);
+                    } else {
+                        return Some(0);
+                    }
+                }
+            }
+            // Error condition, requested property not found.
+            return None
+        }
+    }
+
     fn write(&self, memory: &mut Memory) {
         let addr = memory.read_u16(0xa) as usize + 31 * 2 + (self.index - 1) * 9;
         memory.write_u16(addr, ((self.attrib >> 16) & 0xffff) as u16);
@@ -879,10 +913,12 @@ pub struct Machine {
     ip: usize,
     io: ZIO,
     finished: bool,
+    rng: StdRng,
 }
 
 impl Machine {
     fn new(memory: Memory, header: Header) -> Machine {
+        let seed: &[_] = &[random::<usize>()];
         Machine {
             ip: memory.read_u16(0x6) as usize,
             dictionary: Dictionary::new(&memory, memory.read_u16(0x08) as usize),
@@ -890,6 +926,7 @@ impl Machine {
             header: header,
             io: ZIO::new(),
             finished: false,
+            rng: SeedableRng::from_seed(seed),
         }
     }
 
@@ -1310,7 +1347,7 @@ impl Machine {
             "div" => {
                 let (x, y) = read_args!(i16, i16);
                 if y == 0 {
-                    return MachineState::Break(format!("divide by zero"));
+                    return MachineState::Break(format!("divide by zero\n"));
                 }
                 self.write_var(i.ret, (x / y) as u16);
             }
@@ -1318,6 +1355,49 @@ impl Machine {
                 let x = read_args!(usize);
                 let zs = ZString::new(&self.memory, address!(x));
                 self.io.print(&format!("{}", zs));
+            }
+            "not" => {
+                let x = read_args!(u16);
+                self.write_var(i.ret, !x);
+            }
+            "or" => {
+                let (x, y) = read_args!(u16, u16);
+                self.write_var(i.ret, x | y);
+            }
+            "mod" => {
+                let (x, y) = read_args!(i16, i16);
+                if y == 0 {
+                    return MachineState::Break(format!("divide by zero\n"));
+                }
+                self.write_var(i.ret, (x % y) as u16);
+            }
+            "remove_obj" => {
+                let mut obj = read_args!(Object);
+                obj.remove(&mut self.memory);
+            }
+            "random" => {
+                let range = read_args!(i16);
+                if range <= 0 {
+                    let seed : &[_] = &[range as usize];
+                    self.rng.reseed(seed);
+                    self.write_var(i.ret, 0);
+                } else {
+                    let x = self.rng.gen::<u16>();
+                    let val = x % range as u16 + 1;
+                    self.write_var(i.ret, val);
+                }
+            }
+            "get_next_prop" => {
+                let (obj, y) = read_args!(Object, usize);
+                if let Some(index) = obj.get_next_property(&self.memory, y) {
+                    self.write_var(i.ret, index as u16);
+                } else {
+                    return MachineState::Break(format!("could not find property\n"));
+                }
+            }
+            "load" => {
+                let x = read_args!(u16);
+                self.write_var(i.ret, x);
             }
             _ => return MachineState::Break(format!("unimplemented instruction:\n{}", i)),
         }

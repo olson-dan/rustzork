@@ -1,7 +1,7 @@
 # rustzork
-ZMachine V3 in Rust
+ZMachine V3 in Rust, now with WebAssembly support.
 
-Not finished yet.
+It is not entirely finished.  There is no save/restore and there are some small bugs, but all instructions used in Zork 1 are implemented and the game is mostly playable.
 
 I've only known Rust for like 2 weeks so this might suck.
 
