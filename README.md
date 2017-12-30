@@ -1,7 +1,7 @@
 # rustzork
 ZMachine V3 in Rust, now with WebAssembly support.
 
-It is not entirely finished.  There is no save/restore, but otherwise Zork 1 is playable.  Unfortunately, there have been small bugs noticed in Zork 1 playthroughs despite the fact that the implementation passes the V3 CZECH tests (https://github.com/DustinCampbell/ZGo/tree/master/zcode/czech).
+It is not entirely finished.  There is no save/restore, but otherwise Zork 1 is playable, and the implementation passes the V3 CZECH tests (https://github.com/DustinCampbell/ZGo/tree/master/zcode/czech).
 
 I've only known Rust for like ~~2 weeks~~ a few months so this might suck.
 
