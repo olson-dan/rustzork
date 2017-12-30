@@ -147,7 +147,10 @@ impl fmt::Display for Operand {
             Operand::Variable(x) if x == 0 => write!(f, "(SP)+"),
             Operand::Variable(x) if x >= 0x10 => write!(f, "G{:02x}", x - 0x10),
             Operand::Variable(x) => write!(f, "L{:02x}", x - 1),
-            _ => write!(f, ""),
+            Operand::Indirect(x) if x == 0 => write!(f, "[(SP)]"),
+            Operand::Indirect(x) if x >= 0x10 => write!(f, "[G{:02x}]", x - 0x10),
+            Operand::Indirect(x) => write!(f, "[L{:02x}]", x - 1),
+            Operand::Omitted => write!(f, ""),
         }
     }
 }
@@ -165,6 +168,9 @@ impl fmt::Display for Return {
             &Return::Variable(x) if x == 0 => write!(f, " -> -(SP)"),
             &Return::Variable(x) if x >= 0x10 => write!(f, " -> G{:02x}", x - 0x10),
             &Return::Variable(x) => write!(f, " -> L{:02x}", x - 1),
+            &Return::Indirect(x) if x == 0 => write!(f, " -> (SP)"),
+            &Return::Indirect(x) if x >= 0x10 => write!(f, " -> G{:02x}", x - 0x10),
+            &Return::Indirect(x) => write!(f, " -> L{:02x}", x - 1),
             _ => write!(f, ""),
         }
     }
@@ -681,16 +687,20 @@ impl Property {
     fn read(&self, memory: &Memory) -> u16 {
         if self.length == 1 {
             memory.read_u8(self.offset + 1) as u16
-        } else {
+        } else if self.length == 2 {
             memory.read_u16(self.offset + 1)
+        } else {
+            unimplemented!()
         }
     }
 
     fn write(&self, memory: &mut Memory, value: u16) {
         if self.length == 1 {
             memory.write_u8(self.offset + 1, (value & 0xff) as u8);
-        } else {
+        } else if self.length == 2 {
             memory.write_u16(self.offset + 1, value);
+        } else {
+            unimplemented!()
         }
     }
 }
@@ -705,9 +715,12 @@ struct Object {
     name: ZString,
 }
 
+const OBJECT_SIZE : usize = 9;
+const NUM_DEFAULTS : usize = 31;
+const DEFAULT_TABLE_SIZE: usize = NUM_DEFAULTS * 2;
 impl Object {
     fn new(memory: &Memory, index: usize) -> Object {
-        let addr = memory.read_u16(0xa) as usize + 31 * 2 + (index - 1) * 9;
+        let addr = memory.read_u16(0xa) as usize + DEFAULT_TABLE_SIZE + (index - 1) * OBJECT_SIZE;
         let prop_addr = memory.read_u16(addr + 7) as usize;
         Object {
             offset: prop_addr,
@@ -719,6 +732,13 @@ impl Object {
             child: memory.read_u8(addr + 6) as usize,
             name: ZString::new(memory, prop_addr + 1),
         }
+    }
+
+    fn refresh(&mut self, memory: &Memory) {
+        let addr = memory.read_u16(0xa) as usize + DEFAULT_TABLE_SIZE + (self.index - 1) * OBJECT_SIZE;
+        self.parent = memory.read_u8(addr + 4) as usize;
+        self.sibling = memory.read_u8(addr + 5) as usize;
+        self.child = memory.read_u8(addr + 6) as usize;
     }
 
     fn get_property(&self, memory: &Memory, index: usize) -> Property {
@@ -778,12 +798,12 @@ impl Object {
                 }
             }
             // Error condition, requested property not found.
-            return None
+            return None;
         }
     }
 
     fn write(&self, memory: &mut Memory) {
-        let addr = memory.read_u16(0xa) as usize + 31 * 2 + (self.index - 1) * 9;
+        let addr = memory.read_u16(0xa) as usize + DEFAULT_TABLE_SIZE + (self.index - 1) * OBJECT_SIZE;;
         memory.write_u16(addr, ((self.attrib >> 16) & 0xffff) as u16);
         memory.write_u16(addr + 2, (self.attrib & 0xffff) as u16);
         memory.write_u8(addr + 4, self.parent as u8);
@@ -903,6 +923,7 @@ enum MachineState {
     Continue,
     GetInput,
     Break(String),
+    CleanExit,
 }
 
 pub struct Machine {
@@ -1076,7 +1097,10 @@ impl Machine {
         macro_rules! convert_arg {
             ($e:expr, Object) => (
                 {
-                    let x = address!($e as usize);
+                    let x = $e as usize;
+                    if x == 0 {
+                        return MachineState::Break(format!("attempted to access object 0\n"));
+                    }
                     Object::new(&self.memory, x)
                 }
             );
@@ -1085,7 +1109,7 @@ impl Machine {
                     Operand::Large(x) => x as u8,
                     Operand::Small(x) => x,
                     Operand::Variable(_) => self.read_var(i.args[0]) as u8,
-                    _ => 0,
+                    _ => unimplemented!(),
                 }
             );
             ($e:expr, $type:tt) => (
@@ -1160,6 +1184,9 @@ impl Machine {
             }
             "test_attr" => {
                 let (obj, y) = read_args!(Object, usize);
+                if y > 31 {
+                    return MachineState::Break(format!("attribute outside allowed range\n"));
+                }
                 self.jump(i, (obj.attrib & (1 << (31 - y))) != 0);
             }
             "print" => {
@@ -1202,6 +1229,8 @@ impl Machine {
 
                 obj.remove(&mut self.memory);
 
+                dest.refresh(&self.memory);
+
                 obj.sibling = dest.child;
                 dest.child = obj.index;
                 obj.parent = dest.index;
@@ -1223,6 +1252,9 @@ impl Machine {
             }
             "set_attr" => {
                 let (mut obj, y) = read_args!(Object, usize);
+                if y > 31 {
+                    return MachineState::Break(format!("attribute outside allowed range\n"));
+                }
                 obj.attrib |= 1 << (31 - y);
                 obj.write(&mut self.memory);
             }
@@ -1328,6 +1360,9 @@ impl Machine {
             }
             "clear_attr" => {
                 let (mut obj, y) = read_args!(Object, usize);
+                if y > 31 {
+                    return MachineState::Break(format!("attribute outside allowed range\n"));
+                }
                 obj.attrib &= !(1 << (31 - y));
                 obj.write(&mut self.memory);
             }
@@ -1423,6 +1458,9 @@ impl Machine {
             "verify" => {
                 self.jump(i, true);
             }
+            "quit" => {
+                return MachineState::CleanExit;
+            }
             _ => return MachineState::Break(format!("unimplemented instruction:\n{}", i)),
         }
         if self.ip == oldip {
@@ -1441,6 +1479,7 @@ impl Machine {
                     MachineState::Continue => {},
                     MachineState::Break(s) => { self.io.log(&s); self.finished = true; break; }
                     MachineState::GetInput => { break; }
+                    MachineState::CleanExit => { self.finished = true; break; }
                 }
             }
         }
