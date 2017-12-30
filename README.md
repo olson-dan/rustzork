@@ -9,8 +9,6 @@ Partially ported from my F# one.
 
 Read my shitty blog post about zmachines: http://grumpygeneralist.blogspot.com/2014/08/write-zmachine.html
 
-As for a license I'm not sure but I assume it would not be considered legal to use this code or any derivative in another project, and I won't be taking PRs.  Sorry.
-
 ## WASM instructions
 
 This guy's blog post provided me with a lot of "inspiration":
