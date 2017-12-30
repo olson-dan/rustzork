@@ -15,7 +15,7 @@ implemented = set(['call','add','je','sub','jz','storew','ret','loadw','jump',
     'inc','jl','ret_popped','sread','dec_chk','mul','test','storeb','clear_attr',
     'get_prop_addr','get_prop_len','print_paddr','dec','print_ret','div',
     'print_addr', 'not', 'or', 'mod', 'remove_obj', 'random', "get_next_prop",
-    "load"])
+    "load", "pop"])
 
 with open('zork.txt') as f:
     for l in f.readlines():

@@ -12,6 +12,7 @@ enum Operand {
     Large(u16),
     Small(u8),
     Variable(u8),
+    Indirect(u8),
     Omitted,
 }
 
@@ -146,7 +147,7 @@ impl fmt::Display for Operand {
             Operand::Variable(x) if x == 0 => write!(f, "(SP)+"),
             Operand::Variable(x) if x >= 0x10 => write!(f, "G{:02x}", x - 0x10),
             Operand::Variable(x) => write!(f, "L{:02x}", x - 1),
-            Operand::Omitted => write!(f, ""),
+            _ => write!(f, ""),
         }
     }
 }
@@ -154,6 +155,7 @@ impl fmt::Display for Operand {
 #[derive(Debug, Copy, Clone)]
 enum Return {
     Variable(u8),
+    Indirect(u8),
     Omitted,
 }
 
@@ -227,13 +229,53 @@ enum ZStringShift {
     Two,
 }
 
-enum ZStringState {
-    GetNext(u8),
-    GetNextNext(u8, u8),
-    GetNothing,
-}
-
 impl ZString {
+    fn with_bytes(memory: &Memory, offset:usize, length:usize, bytes: &[u8]) -> ZString {
+        let mut shift = ZStringShift::Zero;
+        let mut contents = String::new();
+        let mut it = bytes.into_iter();
+        while let Some(c) = it.next() {
+            match *c {
+                0 => contents.push(' '),
+                1 | 2 | 3 => {
+                    let offset = *c as usize;
+                    let abbrev = *it.next().unwrap() as usize;
+                    let table = memory.read_u16(0x18) as usize;
+                    let index = 32 * (offset - 1) + abbrev;
+                    let offset = memory.read_u16(table + index * 2) as usize;
+                    let abbrev = ZString::new(memory, offset * 2);
+                    contents += &abbrev.contents;
+                }
+                4 => shift = ZStringShift::One,
+                5 => shift = ZStringShift::Two,
+                _ => {
+                    match shift {
+                        ZStringShift::Two if *c == 6 => {
+                            let mut utf_char = it.next().unwrap() << 5;
+                            utf_char |= it.next().unwrap() & 0x1f;
+                            contents += str::from_utf8(&[utf_char]).unwrap();
+                        }
+                        _ => {
+                            let alphabet = match shift {
+                                ZStringShift::Zero => "______abcdefghijklmnopqrstuvwxyz",
+                                ZStringShift::One => "______ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                                ZStringShift::Two => "______^\n0123456789.,!?_#\'\"/\\-:()",
+                            };
+                            contents += &alphabet.chars().nth(*c as usize).unwrap().to_string()
+                        }
+                    }
+                    shift = ZStringShift::Zero;
+                }
+            }
+        }
+
+        ZString {
+            offset: offset,
+            length: length,
+            contents: contents,
+        }
+    }
+
     fn new(memory: &Memory, offset: usize) -> ZString {
         let mut length = 0usize;
         let mut bytes: Vec<u8> = Vec::new();
@@ -249,74 +291,28 @@ impl ZString {
                 break;
             }
         }
+        ZString::with_bytes(memory, offset, length, &bytes)
+    }
 
-        let mut shift = ZStringShift::Zero;
-        let mut state = ZStringState::GetNothing;
-        let contents = bytes.into_iter().fold(String::new(), |c, x| {
-            let enable_utf = if let ZStringShift::Two = shift {
-                true
-            } else {
-                false
-            };
-            match state {
-                ZStringState::GetNothing => {
-                    match x {
-                        0 => c + " ",
-                        1 | 2 | 3 => {
-                            state = ZStringState::GetNext(x);
-                            c
-                        }
-                        4 => {
-                            shift = ZStringShift::One;
-                            c
-                        }
-                        5 => {
-                            shift = ZStringShift::Two;
-                            c
-                        }
-                        6 if enable_utf => {
-                            state = ZStringState::GetNext(x);
-                            c
-                        }
-                        a if a > 5 && a < 32 => {
-                            let alphabet = match shift {
-                                ZStringShift::Zero => "______abcdefghijklmnopqrstuvwxyz",
-                                ZStringShift::One => "______ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-                                ZStringShift::Two => "______^\n0123456789.,!?_#\'\"/\\-:()",
-                            };
-                            shift = ZStringShift::Zero;
-                            c + &alphabet.chars().nth(a as usize).unwrap().to_string()
-                        }
-                        _ => c,
-                    }
-                }
-                ZStringState::GetNext(a) if a > 0 && a < 4 => {
-                    state = ZStringState::GetNothing;
-                    let table = memory.read_u16(0x18) as usize;
-                    let index = (32 * (a - 1) + x) as usize;
-                    let offset = memory.read_u16(table + index * 2) as usize;
-                    let abbrev = ZString::new(memory, offset * 2);
-                    c + &abbrev.contents
-                }
-                ZStringState::GetNext(6) => {
-                    state = ZStringState::GetNextNext(6, x);
-                    c
-                }
-                ZStringState::GetNextNext(6, b) => {
-                    state = ZStringState::GetNothing;
-                    let utf_char = (b << 5) | x;
-                    let v = vec![utf_char];
-                    c + str::from_utf8(&v).unwrap()
-                }
-                _ => c,
+    fn with_max_length(memory: &Memory, offset: usize, max_length: usize) -> ZString {
+        let mut length = 0usize;
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            if length == max_length {
+                break;
             }
-        });
+            let x = memory.read_u16(offset + length);
+            length += 2;
 
-        ZString {
-            offset: offset,
-            length: length,
-            contents: contents,
+            bytes.push(((x >> 10) & 0x1f) as u8);
+            bytes.push(((x >> 5) & 0x1f) as u8);
+            bytes.push((x & 0x1f) as u8);
+
+            if (x & 0x8000) != 0 {
+                break;
+            }
         }
+        ZString::with_bytes(memory, offset, length, &bytes)
     }
 }
 
@@ -731,7 +727,7 @@ impl Object {
             let p = Property::new(memory, addr);
             match p {
                 Property { index: 0, .. } => {
-                    let default_addr = memory.read_u16(0xa) as usize + index - 2;
+                    let default_addr = memory.read_u16(0xa) as usize + (index - 1) * 2;
                     return Property::new(memory, default_addr);
                 }
                 Property { index: i, .. } if i == index => return p,
@@ -840,7 +836,7 @@ impl Dictionary {
         let num_entries = memory.read_u16(entry_start + 1) as usize;
 
         for i in 0..num_entries {
-            words.push(ZString::new(memory, entry_start + 3 + i * entry_length));
+            words.push(ZString::with_max_length(memory, entry_start + 3 + i * entry_length, 4));
         }
 
         Dictionary {
@@ -876,6 +872,7 @@ struct Header {
     high_start: usize,
     high_end: usize,
     globals: usize,
+    checksum: usize,
 }
 
 impl Header {
@@ -887,6 +884,7 @@ impl Header {
         let high_start = mem.read_u16(0x4) as usize;
         let high_end = mem.len();
         let globals = mem.read_u16(0xc) as usize;
+        let checksum = mem.read_u16(0x1c) as usize;
 
         Header {
             dynamic_start: dynamic_start,
@@ -896,6 +894,7 @@ impl Header {
             high_start: high_start,
             high_end: high_end,
             globals: globals,
+            checksum: checksum,
         }
     }
 }
@@ -944,12 +943,22 @@ impl Machine {
     }
 
     fn write_var(&mut self, var: Return, val: u16) {
-        if let Return::Variable(x) = var {
-            match x {
-                x if x >= 0x10 => self.write_global(x - 0x10, val),
-                x if x == 0 => self.memory.stack.push(val),
-                _ => self.write_local(x - 1, val),
+        match var {
+            Return::Variable(x) => {
+                match x {
+                    x if x >= 0x10 => self.write_global(x - 0x10, val),
+                    x if x == 0 => self.memory.stack.push(val),
+                    _ => self.write_local(x - 1, val),
+                }
             }
+            Return::Indirect(x) => {
+                match x {
+                    x if x >= 0x10 => self.write_global(x - 0x10, val),
+                    x if x == 0 => { self.memory.stack.pop(); self.memory.stack.push(val) }
+                    _ => self.write_local(x - 1, val),
+                }
+            }
+            _ => {}
         }
     }
 
@@ -974,6 +983,13 @@ impl Machine {
                 match x {
                     x if x >= 0x10 => self.read_global(x - 0x10),
                     x if x == 0 => self.memory.stack.pop().unwrap(),
+                    _ => self.read_local(x - 1),
+                }
+            }
+            Operand::Indirect(x) => {
+                match x {
+                    x if x >= 0x10 => self.read_global(x - 0x10),
+                    x if x == 0 => *self.memory.stack.last().unwrap(),
                     _ => self.read_local(x - 1),
                 }
             }
@@ -1068,6 +1084,7 @@ impl Machine {
                 match i.args[0] {
                     Operand::Large(x) => x as u8,
                     Operand::Small(x) => x,
+                    Operand::Variable(_) => self.read_var(i.args[0]) as u8,
                     _ => 0,
                 }
             );
@@ -1097,8 +1114,8 @@ impl Machine {
                 self.call(i);
             }
             "add" => {
-                let (x,y) = read_args!(i16, i16);
-                self.write_var(i.ret, (x + y) as u16);
+                let (x,y) = read_args!(i32, i32);
+                self.write_var(i.ret, ((x + y) % 0x10000) as u16);
             }
             "je" => {
                 let x = read_args!(u16);
@@ -1106,8 +1123,8 @@ impl Machine {
                 self.jump(i, compare);
             }
             "sub" => {
-                let (x,y) = read_args!(i16, i16);
-                self.write_var(i.ret, (x - y) as u16);
+                let (x,y) = read_args!(i32, i32);
+                self.write_var(i.ret, ((x - y) % 0x10000) as u16);
             }
             "jz" => {
                 let x = read_args!(u16);
@@ -1139,7 +1156,7 @@ impl Machine {
             }
             "store" => {
                 let (x, y) = read_args!(Variable, u16);
-                self.write_var(Return::Variable(x), y);
+                self.write_var(Return::Indirect(x), y);
             }
             "test_attr" => {
                 let (obj, y) = read_args!(Object, usize);
@@ -1164,7 +1181,7 @@ impl Machine {
                 self.write_var(i.ret, x & y);
             }
             "print_num" => {
-                let x = read_args!(u16);
+                let x = read_args!(i16);
                 self.io.print(&format!("{}", x));
             }
             "inc_chk" => {
@@ -1196,10 +1213,13 @@ impl Machine {
                 let x = read_args!(u16);
                 self.write_var(Return::Variable(0), x);
             }
+            "pop" => {
+                self.read_var(Operand::Variable(0));
+            }
             "pull" => {
                 let x = read_args!(Variable);
                 let val = self.read_var(Operand::Variable(0));
-                self.write_var(Return::Variable(x), val);
+                self.write_var(Return::Indirect(x), val);
             }
             "set_attr" => {
                 let (mut obj, y) = read_args!(Object, usize);
@@ -1243,8 +1263,8 @@ impl Machine {
             }
             "inc" => {
                 let x = read_args!(Variable);
-                let old = self.read_var(Operand::Variable(x)) as i16;
-                self.write_var(Return::Variable(x), (old + 1) as u16);
+                let old = self.read_var(Operand::Variable(x)) as i32;
+                self.write_var(Return::Variable(x), ((old + 1) % 0x10000) as u16);
             }
             "jl" => {
                 let(x, y) = read_args!(i16, i16);
@@ -1294,8 +1314,8 @@ impl Machine {
                 self.jump(i, old - 1 < y);
             }
             "mul" => {
-                let (x, y) = read_args!(i16, i16);
-                self.write_var(i.ret, (x * y) as u16);
+                let (x, y) = read_args!(i64, i64);
+                self.write_var(i.ret, ((x * y) % 0x10000) as u16);
             }
             "test" => {
                 let (x, y) = read_args!(u16, u16);
@@ -1335,8 +1355,8 @@ impl Machine {
             }
             "dec" => {
                 let x = read_args!(Variable);
-                let old = self.read_var(Operand::Variable(x)) as i16;
-                self.write_var(Return::Variable(x), (old - 1) as u16);
+                let old = self.read_var(Operand::Variable(x)) as i32;
+                self.write_var(Return::Variable(x), ((old - 1) % 0x10000) as u16);
             }
             "print_ret" => {
                 if let Some(s) = i.string {
@@ -1396,8 +1416,12 @@ impl Machine {
                 }
             }
             "load" => {
-                let x = read_args!(u16);
-                self.write_var(i.ret, x);
+                let x = read_args!(Variable);
+                let val = self.read_var(Operand::Indirect(x));
+                self.write_var(i.ret, val);
+            }
+            "verify" => {
+                self.jump(i, true);
             }
             _ => return MachineState::Break(format!("unimplemented instruction:\n{}", i)),
         }
