@@ -5,7 +5,7 @@ extern crate rand;
 use std::cmp;
 use std::fmt;
 use std::str;
-use rand::{Rng, SeedableRng, StdRng, random};
+use rand::{random, Rng, SeedableRng, StdRng};
 
 #[derive(Debug, Copy, Clone)]
 enum Operand {
@@ -17,7 +17,7 @@ enum Operand {
 }
 
 #[cfg(not(feature = "cli"))]
-extern {
+extern "C" {
     fn clear();
     #[allow(dead_code)]
     fn debug_trace(x: i32);
@@ -43,15 +43,20 @@ struct ZIO {
 #[cfg(not(feature = "cli"))]
 impl ZIO {
     fn new() -> ZIO {
-        ZIO { buffer: String::new(), input: String::new(), flushed: true, state: InputState::None, }
+        ZIO {
+            buffer: String::new(),
+            input: String::new(),
+            flushed: true,
+            state: InputState::None,
+        }
     }
-    fn print(&mut self, s : &str) -> () {
+    fn print(&mut self, s: &str) -> () {
         if s.ends_with("n") {
             self.flushed = false;
         }
         self.buffer += s;
     }
-    fn flush(&mut self, ) -> Result<(), std::io::Error> {
+    fn flush(&mut self) -> Result<(), std::io::Error> {
         self.flushed = false;
         Ok(())
     }
@@ -94,12 +99,20 @@ impl ZIO {
     fn draw(&mut self) -> () {
         if !self.flushed {
             self.flushed = true;
-            unsafe { clear(); }
+            unsafe {
+                clear();
+            }
             let max_lines = unsafe { terminal_height() } as usize;
-            let lines : Vec<_> = self.buffer.lines().collect();
-            let start = if lines.len() > max_lines { lines.len() - max_lines } else { 0 };
-            for (y,l) in lines[start ..].iter().enumerate() {
-                unsafe { put_line(0, y as i32, l.as_ptr(), l.len() as i32); }
+            let lines: Vec<_> = self.buffer.lines().collect();
+            let start = if lines.len() > max_lines {
+                lines.len() - max_lines
+            } else {
+                0
+            };
+            for (y, l) in lines[start..].iter().enumerate() {
+                unsafe {
+                    put_line(0, y as i32, l.as_ptr(), l.len() as i32);
+                }
             }
         }
     }
@@ -113,12 +126,14 @@ struct ZIO {
 #[cfg(feature = "cli")]
 impl ZIO {
     fn new() -> ZIO {
-        ZIO { input: String::new() }
+        ZIO {
+            input: String::new(),
+        }
     }
-    fn print(&mut self, s : &str) -> () {
+    fn print(&mut self, s: &str) -> () {
         print!("{}", s);
     }
-    fn flush(&mut self, ) -> Result<(), std::io::Error> {
+    fn flush(&mut self) -> Result<(), std::io::Error> {
         use std::io::Write;
         std::io::stdout().flush()
     }
@@ -236,7 +251,7 @@ enum ZStringShift {
 }
 
 impl ZString {
-    fn with_bytes(memory: &Memory, offset:usize, length:usize, bytes: &[u8]) -> ZString {
+    fn with_bytes(memory: &Memory, offset: usize, length: usize, bytes: &[u8]) -> ZString {
         let mut shift = ZStringShift::Zero;
         let mut contents = String::new();
         let mut it = bytes.into_iter();
@@ -352,128 +367,132 @@ struct Instruction {
 impl Instruction {
     fn name(&self) -> &str {
         match self.optype {
-            Encoding::Op0 => {
-                match self.opcode {
-                    0 => "rtrue",
-                    1 => "rfalse",
-                    2 => "print",
-                    3 => "print_ret",
-                    4 => "no",
-                    5 => "save",
-                    6 => "restore",
-                    7 => "restart",
-                    8 => "ret_popped",
-                    9 => "pop",
-                    10 => "quit",
-                    11 => "new_line",
-                    12 => "show_status",
-                    13 => "verify",
-                    14 => "extended",
-                    15 => "piracy",
-                    _ => "unknown",
-                }
-            }
-            Encoding::Op1 => {
-                match self.opcode {
-                    0 => "jz",
-                    1 => "get_sibling",
-                    2 => "get_child",
-                    3 => "get_parent",
-                    4 => "get_prop_len",
-                    5 => "inc",
-                    6 => "dec",
-                    7 => "print_addr",
-                    8 => "call_1s",
-                    9 => "remove_obj",
-                    10 => "print_obj",
-                    11 => "ret",
-                    12 => "jump",
-                    13 => "print_paddr",
-                    14 => "load",
-                    15 => "not",
-                    16 => "call_1n",
-                    _ => "unknown",
-                }
-            }
-            Encoding::Op2 => {
-                match self.opcode {
-                    0 => "none",
-                    1 => "je",
-                    2 => "jl",
-                    3 => "jg",
-                    4 => "dec_chk",
-                    5 => "inc_chk",
-                    6 => "jin",
-                    7 => "test",
-                    8 => "or",
-                    9 => "and",
-                    10 => "test_attr",
-                    11 => "set_attr",
-                    12 => "clear_attr",
-                    13 => "store",
-                    14 => "insert_obj",
-                    15 => "loadw",
-                    16 => "loadb",
-                    17 => "get_prop",
-                    18 => "get_prop_addr",
-                    19 => "get_next_prop",
-                    20 => "add",
-                    21 => "sub",
-                    22 => "mul",
-                    23 => "div",
-                    24 => "mod",
-                    25 => "call_2s",
-                    26 => "call_2n",
-                    27 => "set_colour",
-                    _ => "unknown",
-                }
-            }
-            Encoding::Var => {
-                match self.opcode {
-                    0 => "call",
-                    1 => "storew",
-                    2 => "storeb",
-                    3 => "put_prop",
-                    4 => "sread",
-                    5 => "print_char",
-                    6 => "print_num",
-                    7 => "random",
-                    8 => "push",
-                    9 => "pull",
-                    10 => "split_window",
-                    11 => "set_window",
-                    12 => "call-vs2",
-                    13 => "erase_window",
-                    14 => "erase_line",
-                    15 => "set_cursor",
-                    16 => "get_cursor",
-                    17 => "set_text_style",
-                    18 => "buffer_mode",
-                    19 => "output_stream",
-                    20 => "input_stream",
-                    21 => "sound_effect",
-                    22 => "read_char",
-                    23 => "scan_table",
-                    24 => "not_v4",
-                    25 => "call_vn",
-                    26 => "call_vn2",
-                    27 => "tokenise",
-                    28 => "encode_text",
-                    29 => "copy_table",
-                    30 => "print_table",
-                    31 => "check_arg_count",
-                    _ => "unknown",
-                }
-            }
+            Encoding::Op0 => match self.opcode {
+                0 => "rtrue",
+                1 => "rfalse",
+                2 => "print",
+                3 => "print_ret",
+                4 => "no",
+                5 => "save",
+                6 => "restore",
+                7 => "restart",
+                8 => "ret_popped",
+                9 => "pop",
+                10 => "quit",
+                11 => "new_line",
+                12 => "show_status",
+                13 => "verify",
+                14 => "extended",
+                15 => "piracy",
+                _ => "unknown",
+            },
+            Encoding::Op1 => match self.opcode {
+                0 => "jz",
+                1 => "get_sibling",
+                2 => "get_child",
+                3 => "get_parent",
+                4 => "get_prop_len",
+                5 => "inc",
+                6 => "dec",
+                7 => "print_addr",
+                8 => "call_1s",
+                9 => "remove_obj",
+                10 => "print_obj",
+                11 => "ret",
+                12 => "jump",
+                13 => "print_paddr",
+                14 => "load",
+                15 => "not",
+                16 => "call_1n",
+                _ => "unknown",
+            },
+            Encoding::Op2 => match self.opcode {
+                0 => "none",
+                1 => "je",
+                2 => "jl",
+                3 => "jg",
+                4 => "dec_chk",
+                5 => "inc_chk",
+                6 => "jin",
+                7 => "test",
+                8 => "or",
+                9 => "and",
+                10 => "test_attr",
+                11 => "set_attr",
+                12 => "clear_attr",
+                13 => "store",
+                14 => "insert_obj",
+                15 => "loadw",
+                16 => "loadb",
+                17 => "get_prop",
+                18 => "get_prop_addr",
+                19 => "get_next_prop",
+                20 => "add",
+                21 => "sub",
+                22 => "mul",
+                23 => "div",
+                24 => "mod",
+                25 => "call_2s",
+                26 => "call_2n",
+                27 => "set_colour",
+                _ => "unknown",
+            },
+            Encoding::Var => match self.opcode {
+                0 => "call",
+                1 => "storew",
+                2 => "storeb",
+                3 => "put_prop",
+                4 => "sread",
+                5 => "print_char",
+                6 => "print_num",
+                7 => "random",
+                8 => "push",
+                9 => "pull",
+                10 => "split_window",
+                11 => "set_window",
+                12 => "call-vs2",
+                13 => "erase_window",
+                14 => "erase_line",
+                15 => "set_cursor",
+                16 => "get_cursor",
+                17 => "set_text_style",
+                18 => "buffer_mode",
+                19 => "output_stream",
+                20 => "input_stream",
+                21 => "sound_effect",
+                22 => "read_char",
+                23 => "scan_table",
+                24 => "not_v4",
+                25 => "call_vn",
+                26 => "call_vn2",
+                27 => "tokenise",
+                28 => "encode_text",
+                29 => "copy_table",
+                30 => "print_table",
+                31 => "check_arg_count",
+                _ => "unknown",
+            },
         }
     }
 
     fn decode_short(memory: &Memory, offset: usize, op: u8) -> Instruction {
         let (optype, length, args) = match (op & 0x30) >> 4 {
             3 => (Encoding::Op0, 1, Vec::new()),
-            2 => (Encoding::Op1, 2, vec![Operand::Variable(memory.read_u8(offset + 1))]),
-            1 => (Encoding::Op1, 2, vec![Operand::Small(memory.read_u8(offset + 1))]),
-            _ => (Encoding::Op1, 3, vec![Operand::Large(memory.read_u16(offset + 1))]),
+            2 => (
+                Encoding::Op1,
+                2,
+                vec![Operand::Variable(memory.read_u8(offset + 1))],
+            ),
+            1 => (
+                Encoding::Op1,
+                2,
+                vec![Operand::Small(memory.read_u8(offset + 1))],
+            ),
+            _ => (
+                Encoding::Op1,
+                3,
+                vec![Operand::Large(memory.read_u16(offset + 1))],
+            ),
         };
         Instruction {
             offset: offset,
@@ -496,16 +515,18 @@ impl Instruction {
             opcode: (op & 0x1f) as usize,
             optype: Encoding::Op2,
             length: 3,
-            args: vec![if (op & 0x40) != 0 {
-                           Operand::Variable(x)
-                       } else {
-                           Operand::Small(x)
-                       },
-                       if (op & 0x20) != 0 {
-                           Operand::Variable(y)
-                       } else {
-                           Operand::Small(y)
-                       }],
+            args: vec![
+                if (op & 0x40) != 0 {
+                    Operand::Variable(x)
+                } else {
+                    Operand::Small(x)
+                },
+                if (op & 0x20) != 0 {
+                    Operand::Variable(y)
+                } else {
+                    Operand::Small(y)
+                },
+            ],
             ret: Return::Omitted,
             string: None,
             jump_offset: None,
@@ -546,10 +567,12 @@ impl Instruction {
             },
             length: size,
             args: args.into_iter()
-                .filter(|x| if let &Operand::Omitted = x {
-                    false
-                } else {
-                    true
+                .filter(|x| {
+                    if let &Operand::Omitted = x {
+                        false
+                    } else {
+                        true
+                    }
                 })
                 .collect(),
             ret: Return::Omitted,
@@ -562,12 +585,12 @@ impl Instruction {
     fn add_return(&mut self, memory: &Memory) {
         if match self.optype {
             Encoding::Op2 => {
-                (self.opcode >= 0x08 && self.opcode <= 0x09) ||
-                (self.opcode >= 0x0f && self.opcode <= 0x19)
+                (self.opcode >= 0x08 && self.opcode <= 0x09)
+                    || (self.opcode >= 0x0f && self.opcode <= 0x19)
             }
             Encoding::Op1 => {
-                (self.opcode >= 0x01 && self.opcode <= 0x04) || self.opcode == 0x08 ||
-                (self.opcode >= 0x0e && self.opcode <= 0x0f)
+                (self.opcode >= 0x01 && self.opcode <= 0x04) || self.opcode == 0x08
+                    || (self.opcode >= 0x0e && self.opcode <= 0x0f)
             }
             Encoding::Var => self.opcode == 0x0 || self.opcode == 0x7,
             _ => false,
@@ -656,15 +679,17 @@ impl fmt::Display for Instruction {
         } else {
             String::new()
         };
-        write!(f,
-               "[{:08X}] {}\t{}{}{}{}{}",
-               self.offset,
-               self.name().to_uppercase(),
-               args.join(","),
-               self.ret,
-               string,
-               compare,
-               offset)
+        write!(
+            f,
+            "[{:08X}] {}\t{}{}{}{}{}",
+            self.offset,
+            self.name().to_uppercase(),
+            args.join(","),
+            self.ret,
+            string,
+            compare,
+            offset
+        )
     }
 }
 
@@ -715,8 +740,8 @@ struct Object {
     name: ZString,
 }
 
-const OBJECT_SIZE : usize = 9;
-const NUM_DEFAULTS : usize = 31;
+const OBJECT_SIZE: usize = 9;
+const NUM_DEFAULTS: usize = 31;
 const DEFAULT_TABLE_SIZE: usize = NUM_DEFAULTS * 2;
 impl Object {
     fn new(memory: &Memory, index: usize) -> Object {
@@ -725,8 +750,8 @@ impl Object {
         Object {
             offset: prop_addr,
             index: index,
-            attrib: ((memory.read_u16(addr + 0) as usize) << 16) |
-                    (memory.read_u16(addr + 2) as usize),
+            attrib: ((memory.read_u16(addr + 0) as usize) << 16)
+                | (memory.read_u16(addr + 2) as usize),
             parent: memory.read_u8(addr + 4) as usize,
             sibling: memory.read_u8(addr + 5) as usize,
             child: memory.read_u8(addr + 6) as usize,
@@ -735,7 +760,8 @@ impl Object {
     }
 
     fn refresh(&mut self, memory: &Memory) {
-        let addr = memory.read_u16(0xa) as usize + DEFAULT_TABLE_SIZE + (self.index - 1) * OBJECT_SIZE;
+        let addr =
+            memory.read_u16(0xa) as usize + DEFAULT_TABLE_SIZE + (self.index - 1) * OBJECT_SIZE;
         self.parent = memory.read_u8(addr + 4) as usize;
         self.sibling = memory.read_u8(addr + 5) as usize;
         self.child = memory.read_u8(addr + 6) as usize;
@@ -770,7 +796,7 @@ impl Object {
 
     fn get_next_property(&self, memory: &Memory, index: usize) -> Option<usize> {
         let mut addr = self.offset + 1 + self.name.length;
-        let mut props : Vec<Property> = Vec::new();
+        let mut props: Vec<Property> = Vec::new();
         loop {
             let p = Property::new(memory, addr);
             match p {
@@ -803,7 +829,8 @@ impl Object {
     }
 
     fn write(&self, memory: &mut Memory) {
-        let addr = memory.read_u16(0xa) as usize + DEFAULT_TABLE_SIZE + (self.index - 1) * OBJECT_SIZE;;
+        let addr =
+            memory.read_u16(0xa) as usize + DEFAULT_TABLE_SIZE + (self.index - 1) * OBJECT_SIZE;
         memory.write_u16(addr, ((self.attrib >> 16) & 0xffff) as u16);
         memory.write_u16(addr + 2, (self.attrib & 0xffff) as u16);
         memory.write_u8(addr + 4, self.parent as u8);
@@ -856,7 +883,11 @@ impl Dictionary {
         let num_entries = memory.read_u16(entry_start + 1) as usize;
 
         for i in 0..num_entries {
-            words.push(ZString::with_max_length(memory, entry_start + 3 + i * entry_length, 4));
+            words.push(ZString::with_max_length(
+                memory,
+                entry_start + 3 + i * entry_length,
+                4,
+            ));
         }
 
         Dictionary {
@@ -965,20 +996,19 @@ impl Machine {
 
     fn write_var(&mut self, var: Return, val: u16) {
         match var {
-            Return::Variable(x) => {
-                match x {
-                    x if x >= 0x10 => self.write_global(x - 0x10, val),
-                    x if x == 0 => self.memory.stack.push(val),
-                    _ => self.write_local(x - 1, val),
+            Return::Variable(x) => match x {
+                x if x >= 0x10 => self.write_global(x - 0x10, val),
+                x if x == 0 => self.memory.stack.push(val),
+                _ => self.write_local(x - 1, val),
+            },
+            Return::Indirect(x) => match x {
+                x if x >= 0x10 => self.write_global(x - 0x10, val),
+                x if x == 0 => {
+                    self.memory.stack.pop();
+                    self.memory.stack.push(val)
                 }
-            }
-            Return::Indirect(x) => {
-                match x {
-                    x if x >= 0x10 => self.write_global(x - 0x10, val),
-                    x if x == 0 => { self.memory.stack.pop(); self.memory.stack.push(val) }
-                    _ => self.write_local(x - 1, val),
-                }
-            }
+                _ => self.write_local(x - 1, val),
+            },
             _ => {}
         }
     }
@@ -1000,20 +1030,16 @@ impl Machine {
 
     fn read_var(&mut self, var: Operand) -> u16 {
         match var {
-            Operand::Variable(x) => {
-                match x {
-                    x if x >= 0x10 => self.read_global(x - 0x10),
-                    x if x == 0 => self.memory.stack.pop().unwrap(),
-                    _ => self.read_local(x - 1),
-                }
-            }
-            Operand::Indirect(x) => {
-                match x {
-                    x if x >= 0x10 => self.read_global(x - 0x10),
-                    x if x == 0 => *self.memory.stack.last().unwrap(),
-                    _ => self.read_local(x - 1),
-                }
-            }
+            Operand::Variable(x) => match x {
+                x if x >= 0x10 => self.read_global(x - 0x10),
+                x if x == 0 => self.memory.stack.pop().unwrap(),
+                _ => self.read_local(x - 1),
+            },
+            Operand::Indirect(x) => match x {
+                x if x >= 0x10 => self.read_global(x - 0x10),
+                x if x == 0 => *self.memory.stack.last().unwrap(),
+                _ => self.read_local(x - 1),
+            },
             Operand::Large(x) => x,
             Operand::Small(x) => x as u16,
             Operand::Omitted => 0,
@@ -1138,7 +1164,7 @@ impl Machine {
                 self.call(i);
             }
             "add" => {
-                let (x,y) = read_args!(i32, i32);
+                let (x, y) = read_args!(i32, i32);
                 self.write_var(i.ret, ((x + y) % 0x10000) as u16);
             }
             "je" => {
@@ -1147,7 +1173,7 @@ impl Machine {
                 self.jump(i, compare);
             }
             "sub" => {
-                let (x,y) = read_args!(i32, i32);
+                let (x, y) = read_args!(i32, i32);
                 self.write_var(i.ret, ((x - y) % 0x10000) as u16);
             }
             "jz" => {
@@ -1199,12 +1225,12 @@ impl Machine {
                 self.io.print("\n");
             }
             "loadb" => {
-                let (x,y) = read_args!(usize, usize);
+                let (x, y) = read_args!(usize, usize);
                 let val = self.memory.read_u8(address!(x + y)) as u16;
                 self.write_var(i.ret, val);
             }
             "and" => {
-                let (x,y) = read_args!(u16, u16);
+                let (x, y) = read_args!(u16, u16);
                 self.write_var(i.ret, x & y);
             }
             "print_num" => {
@@ -1299,7 +1325,7 @@ impl Machine {
                 self.write_var(Return::Variable(x), ((old + 1) % 0x10000) as u16);
             }
             "jl" => {
-                let(x, y) = read_args!(i16, i16);
+                let (x, y) = read_args!(i16, i16);
                 self.jump(i, x < y);
             }
             "ret_popped" => {
@@ -1322,9 +1348,9 @@ impl Machine {
                 }
                 self.memory.write_u8(x + max_length + 1, 0);
 
-                let tokens: Vec<_> =
-                    input.split(|c| c == ' ' || self.dictionary.separators.iter().any(|x| *x == c))
-                        .collect();
+                let tokens: Vec<_> = input
+                    .split(|c| c == ' ' || self.dictionary.separators.iter().any(|x| *x == c))
+                    .collect();
                 let max_parse = std::cmp::min(self.memory.read_u8(y) as usize, tokens.len());
                 self.memory.write_u8(y + 1, max_parse as u8);
                 for (i, token) in tokens[..max_parse].iter().enumerate() {
@@ -1433,7 +1459,7 @@ impl Machine {
             "random" => {
                 let range = read_args!(i16);
                 if range <= 0 {
-                    let seed : &[_] = &[range as usize];
+                    let seed: &[_] = &[range as usize];
                     self.rng.reseed(seed);
                     self.write_var(i.ret, 0);
                 } else {
@@ -1476,10 +1502,19 @@ impl Machine {
                 #[cfg(debug_assertions)]
                 self.io.log(&format!("{}", i));
                 match self.execute(i) {
-                    MachineState::Continue => {},
-                    MachineState::Break(s) => { self.io.log(&s); self.finished = true; break; }
-                    MachineState::GetInput => { break; }
-                    MachineState::CleanExit => { self.finished = true; break; }
+                    MachineState::Continue => {}
+                    MachineState::Break(s) => {
+                        self.io.log(&s);
+                        self.finished = true;
+                        break;
+                    }
+                    MachineState::GetInput => {
+                        break;
+                    }
+                    MachineState::CleanExit => {
+                        self.finished = true;
+                        break;
+                    }
                 }
             }
         }
@@ -1507,7 +1542,12 @@ fn get_machine() -> Machine {
     let matches = App::new("rustzork")
         .version("1.0")
         .about("Interpreter for V3 zmachine spec.")
-        .arg(Arg::with_name("file").help("Path to the .z3 file to run").index(1).required(false))
+        .arg(
+            Arg::with_name("file")
+                .help("Path to the .z3 file to run")
+                .index(1)
+                .required(false),
+        )
         .get_matches();
 
     let filename = matches.value_of("file").unwrap_or("zork.z3");
@@ -1541,7 +1581,7 @@ pub extern "C" fn initialize() -> *mut Machine {
 #[cfg(not(feature = "cli"))]
 #[no_mangle]
 pub extern "C" fn key_pressed(machine: *mut Machine, key: u8) {
-    let mut machine: Box<Machine> = unsafe { Box::from_raw( machine ) };
+    let mut machine: Box<Machine> = unsafe { Box::from_raw(machine) };
     machine.io.key_down(key);
     machine.io.draw();
     std::mem::forget(machine);
@@ -1550,7 +1590,7 @@ pub extern "C" fn key_pressed(machine: *mut Machine, key: u8) {
 #[cfg(not(feature = "cli"))]
 #[no_mangle]
 pub extern "C" fn update(machine: *mut Machine) {
-    let mut machine: Box<Machine> = unsafe { Box::from_raw( machine ) };
+    let mut machine: Box<Machine> = unsafe { Box::from_raw(machine) };
     machine.step();
     machine.io.draw();
     std::mem::forget(machine);
