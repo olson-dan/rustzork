@@ -2,10 +2,10 @@
 extern crate clap;
 extern crate rand;
 
+use rand::{random, Rng, SeedableRng, StdRng};
 use std::cmp;
 use std::fmt;
 use std::str;
-use rand::{random, Rng, SeedableRng, StdRng};
 
 #[derive(Debug, Copy, Clone)]
 enum Operand {
@@ -366,112 +366,116 @@ struct Instruction {
 
 impl Instruction {
     fn name(&self) -> &str {
+        let names0op = [
+            "rtrue",
+            "rfalse",
+            "print",
+            "print_ret",
+            "no",
+            "save",
+            "restore",
+            "restart",
+            "ret_popped",
+            "pop",
+            "quit",
+            "new_line",
+            "show_status",
+            "verify",
+            "extended",
+            "piracy",
+        ];
+        let names1op = [
+            "jz",
+            "get_sibling",
+            "get_child",
+            "get_parent",
+            "get_prop_len",
+            "inc",
+            "dec",
+            "print_addr",
+            "call_1s",
+            "remove_obj",
+            "print_obj",
+            "ret",
+            "jump",
+            "print_paddr",
+            "load",
+            "not",
+            "call_1n",
+        ];
+        let names2op = [
+            "none",
+            "je",
+            "jl",
+            "jg",
+            "dec_chk",
+            "inc_chk",
+            "jin",
+            "test",
+            "or",
+            "and",
+            "test_attr",
+            "set_attr",
+            "clear_attr",
+            "store",
+            "insert_obj",
+            "loadw",
+            "loadb",
+            "get_prop",
+            "get_prop_addr",
+            "get_next_prop",
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "mod",
+            "call_2s",
+            "call_2n",
+            "set_colour",
+            "throw",
+        ];
+        let namesvar = [
+            "call",
+            "storew",
+            "storeb",
+            "put_prop",
+            "sread",
+            "print_char",
+            "print_num",
+            "random",
+            "push",
+            "pull",
+            "split_window",
+            "set_window",
+            "call_vs2",
+            "erase_window",
+            "erase_line",
+            "set_cursor",
+            "get_cursor",
+            "set_text_style",
+            "buffer_mode",
+            "output_stream",
+            "input_stream",
+            "sound_effect",
+            "read_char",
+            "scan_table",
+            "not_v4",
+            "call_vn",
+            "call_vn2",
+            "tokenise",
+            "encode_text",
+            "copy_table",
+            "print_table",
+            "check_arg_count",
+        ];
+
         match self.optype {
-            Encoding::Op0 => match self.opcode {
-                0 => "rtrue",
-                1 => "rfalse",
-                2 => "print",
-                3 => "print_ret",
-                4 => "no",
-                5 => "save",
-                6 => "restore",
-                7 => "restart",
-                8 => "ret_popped",
-                9 => "pop",
-                10 => "quit",
-                11 => "new_line",
-                12 => "show_status",
-                13 => "verify",
-                14 => "extended",
-                15 => "piracy",
-                _ => "unknown",
-            },
-            Encoding::Op1 => match self.opcode {
-                0 => "jz",
-                1 => "get_sibling",
-                2 => "get_child",
-                3 => "get_parent",
-                4 => "get_prop_len",
-                5 => "inc",
-                6 => "dec",
-                7 => "print_addr",
-                8 => "call_1s",
-                9 => "remove_obj",
-                10 => "print_obj",
-                11 => "ret",
-                12 => "jump",
-                13 => "print_paddr",
-                14 => "load",
-                15 => "not",
-                16 => "call_1n",
-                _ => "unknown",
-            },
-            Encoding::Op2 => match self.opcode {
-                0 => "none",
-                1 => "je",
-                2 => "jl",
-                3 => "jg",
-                4 => "dec_chk",
-                5 => "inc_chk",
-                6 => "jin",
-                7 => "test",
-                8 => "or",
-                9 => "and",
-                10 => "test_attr",
-                11 => "set_attr",
-                12 => "clear_attr",
-                13 => "store",
-                14 => "insert_obj",
-                15 => "loadw",
-                16 => "loadb",
-                17 => "get_prop",
-                18 => "get_prop_addr",
-                19 => "get_next_prop",
-                20 => "add",
-                21 => "sub",
-                22 => "mul",
-                23 => "div",
-                24 => "mod",
-                25 => "call_2s",
-                26 => "call_2n",
-                27 => "set_colour",
-                _ => "unknown",
-            },
-            Encoding::Var => match self.opcode {
-                0 => "call",
-                1 => "storew",
-                2 => "storeb",
-                3 => "put_prop",
-                4 => "sread",
-                5 => "print_char",
-                6 => "print_num",
-                7 => "random",
-                8 => "push",
-                9 => "pull",
-                10 => "split_window",
-                11 => "set_window",
-                12 => "call-vs2",
-                13 => "erase_window",
-                14 => "erase_line",
-                15 => "set_cursor",
-                16 => "get_cursor",
-                17 => "set_text_style",
-                18 => "buffer_mode",
-                19 => "output_stream",
-                20 => "input_stream",
-                21 => "sound_effect",
-                22 => "read_char",
-                23 => "scan_table",
-                24 => "not_v4",
-                25 => "call_vn",
-                26 => "call_vn2",
-                27 => "tokenise",
-                28 => "encode_text",
-                29 => "copy_table",
-                30 => "print_table",
-                31 => "check_arg_count",
-                _ => "unknown",
-            },
+            Encoding::Op0 => names0op.get(self.opcode).unwrap_or(&"unknown"),
+            Encoding::Op1 => names1op.get(self.opcode).unwrap_or(&"unknown"),
+
+            Encoding::Op2 => names2op.get(self.opcode).unwrap_or(&"unknown"),
+
+            Encoding::Var => namesvar.get(self.opcode).unwrap_or(&"unknown"),
         }
     }
 
@@ -566,7 +570,8 @@ impl Instruction {
                 Encoding::Op2
             },
             length: size,
-            args: args.into_iter()
+            args: args
+                .into_iter()
                 .filter(|x| {
                     if let &Operand::Omitted = x {
                         false
@@ -589,7 +594,8 @@ impl Instruction {
                     || (self.opcode >= 0x0f && self.opcode <= 0x19)
             }
             Encoding::Op1 => {
-                (self.opcode >= 0x01 && self.opcode <= 0x04) || self.opcode == 0x08
+                (self.opcode >= 0x01 && self.opcode <= 0x04)
+                    || self.opcode == 0x08
                     || (self.opcode >= 0x0e && self.opcode <= 0x0f)
             }
             Encoding::Var => self.opcode == 0x0 || self.opcode == 0x7,
@@ -1111,14 +1117,14 @@ impl Machine {
 
     fn execute(&mut self, i: Instruction) -> MachineState {
         macro_rules! address {
-            ($e:expr) => (
+            ($e:expr) => {
                 self.header.dynamic_start + $e
-            );
+            };
         }
         macro_rules! packed_address {
-            ($e:expr) => (
+            ($e:expr) => {
                 self.header.dynamic_start + 2 * $e
-            );
+            };
         }
         macro_rules! convert_arg {
             ($e:expr, Object) => (
@@ -1143,18 +1149,22 @@ impl Machine {
             );
         }
         macro_rules! read_args {
-            ($arg1_type:tt, $arg2_type:tt, $arg3_type:tt) => (
-                (convert_arg!(self.read_var(i.args[0]),$arg1_type),
-                convert_arg!(self.read_var(i.args[1]),$arg2_type),
-                convert_arg!(self.read_var(i.args[2]),$arg3_type))
-            );
-            ($arg1_type:tt, $arg2_type:tt) => (
-                (convert_arg!(self.read_var(i.args[0]),$arg1_type),
-                convert_arg!(self.read_var(i.args[1]),$arg2_type))
-            );
-            ($arg1_type:tt) => (
-                convert_arg!(self.read_var(i.args[0]),$arg1_type)
-            );
+            ($arg1_type:tt, $arg2_type:tt, $arg3_type:tt) => {
+                (
+                    convert_arg!(self.read_var(i.args[0]), $arg1_type),
+                    convert_arg!(self.read_var(i.args[1]), $arg2_type),
+                    convert_arg!(self.read_var(i.args[2]), $arg3_type),
+                )
+            };
+            ($arg1_type:tt, $arg2_type:tt) => {
+                (
+                    convert_arg!(self.read_var(i.args[0]), $arg1_type),
+                    convert_arg!(self.read_var(i.args[1]), $arg2_type),
+                )
+            };
+            ($arg1_type:tt) => {
+                convert_arg!(self.read_var(i.args[0]), $arg1_type)
+            };
         }
 
         let oldip = self.ip;
