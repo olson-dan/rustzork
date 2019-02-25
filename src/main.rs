@@ -1391,8 +1391,7 @@ impl Machine {
             }
             "storeb" => {
                 let (x, y, val) = read_args!(usize, usize, u8);
-                let addr = x + 2 * y;
-                self.memory.write_u8(address!(addr), val);
+                self.memory.write_u8(address!(x + y), val);
             }
             "clear_attr" => {
                 let (mut obj, y) = read_args!(Object, usize);
