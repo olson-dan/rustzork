@@ -1,22 +1,45 @@
 {
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "C++ Launch (Windows)",
-            "type": "cppvsdbg",
+            "type": "lldb",
             "request": "launch",
-            "program": "${workspaceRoot}/target/debug/rustzork.exe",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceRoot}",
-            "environment": [],
-            "externalConsole": false
+            "name": "Debug executable 'rustzork'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=rustzork",
+                    "--package=rustzork"
+                ],
+                "filter": {
+                    "name": "rustzork",
+                    "kind": "bin"
+                }
+            },
+            "args": ["czech.z3"],
+            "cwd": "${workspaceFolder}"
         },
         {
-            "name": "C++ Attach (Windows)",
-            "type": "cppvsdbg",
-            "request": "attach",
-            "processId": "${command.pickProcess}"
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'rustzork'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=rustzork",
+                    "--package=rustzork"
+                ],
+                "filter": {
+                    "name": "rustzork",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
         }
     ]
 }

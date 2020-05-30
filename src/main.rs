@@ -2,7 +2,8 @@
 extern crate clap;
 extern crate rand;
 
-use rand::{random, Rng, SeedableRng, StdRng};
+use rand::rngs::SmallRng;
+use rand::{FromEntropy, RngCore, SeedableRng};
 use std::cmp;
 use std::fmt;
 use std::str;
@@ -970,12 +971,11 @@ pub struct Machine {
     ip: usize,
     io: ZIO,
     finished: bool,
-    rng: StdRng,
+    rng: SmallRng,
 }
 
 impl Machine {
     fn new(memory: Memory, header: Header) -> Machine {
-        let seed: &[_] = &[random::<usize>()];
         Machine {
             ip: memory.read_u16(0x6) as usize,
             dictionary: Dictionary::new(&memory, memory.read_u16(0x08) as usize),
@@ -983,7 +983,7 @@ impl Machine {
             header: header,
             io: ZIO::new(),
             finished: false,
-            rng: SeedableRng::from_seed(seed),
+            rng: SmallRng::from_entropy(),
         }
     }
 
@@ -1468,11 +1468,10 @@ impl Machine {
             "random" => {
                 let range = read_args!(i16);
                 if range <= 0 {
-                    let seed: &[_] = &[range as usize];
-                    self.rng.reseed(seed);
+                    self.rng = SmallRng::seed_from_u64(range as u64);
                     self.write_var(i.ret, 0);
                 } else {
-                    let x = self.rng.gen::<u16>();
+                    let x = self.rng.next_u32() as u16;
                     let val = x % range as u16 + 1;
                     self.write_var(i.ret, val);
                 }
@@ -1532,12 +1531,7 @@ impl Machine {
 
 #[cfg(feature = "cli")]
 fn open_z3(filename: &str) -> Result<Machine, std::io::Error> {
-    use std::fs::File;
-    use std::io::Read;
-
-    let mut file = try!(File::open(filename));
-    let mut buffer: Vec<u8> = Vec::new();
-    try!(file.read_to_end(&mut buffer));
+    let buffer = std::fs::read(filename)?;
 
     let memory = Memory::new(&buffer);
     let header = Header::new(&memory);
